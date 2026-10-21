@@ -26,8 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = ServerConfig()
-    if config.auth_mode not in ("oidc", "google", "disabled"):
-        raise RuntimeError("PHENIKAA_SERVER_AUTH must be oidc, google, or disabled")
+    if config.auth_mode not in ("oidc", "google", "web3", "disabled"):
+        raise RuntimeError("PHENIKAA_SERVER_AUTH must be web3, oidc, google, or disabled")
     if config.auth_mode == "google" and not config.google_oauth_configured:
         raise RuntimeError("Google login requires PHENIKAA_GOOGLE_CLIENT_ID, PHENIKAA_GOOGLE_CLIENT_SECRET and PHENIKAA_GOOGLE_REDIRECT_URI")
     if args.host:
