@@ -55,8 +55,8 @@ class ServerConfig:
             if item.strip()
         )
     )
-    # oidc, google, or disabled (single local development user)
-    auth_mode: str = field(default_factory=lambda: os.environ.get("PHENIKAA_SERVER_AUTH", "oidc"))
+    # oidc, google, web3 (SIWE), or disabled (single local development user)
+    auth_mode: str = field(default_factory=lambda: os.environ.get("PHENIKAA_SERVER_AUTH", "web3"))
     oidc_issuer: str = field(default_factory=lambda: os.environ.get("PHENIKAA_OIDC_ISSUER", ""))
     oidc_client_id: str = field(default_factory=lambda: os.environ.get("PHENIKAA_OIDC_CLIENT_ID", ""))
     oidc_client_secret: str = field(default_factory=lambda: os.environ.get("PHENIKAA_OIDC_CLIENT_SECRET", ""))
@@ -64,6 +64,13 @@ class ServerConfig:
     google_client_id: str = field(default_factory=lambda: os.environ.get("PHENIKAA_GOOGLE_CLIENT_ID", ""))
     google_client_secret: str = field(default_factory=lambda: os.environ.get("PHENIKAA_GOOGLE_CLIENT_SECRET", ""))
     google_redirect_uri: str = field(default_factory=lambda: os.environ.get("PHENIKAA_GOOGLE_REDIRECT_URI", ""))
+    # Web3 / SIWE / IPFS / Token Gating configuration
+    web3_rpc_url: str = field(default_factory=lambda: os.environ.get("WEB3_RPC_URL", "https://polygon-rpc.com"))
+    web3_chain_id: int = field(default_factory=lambda: int(os.environ.get("WEB3_CHAIN_ID", "137")))
+    pinata_jwt: str = field(default_factory=lambda: os.environ.get("PINATA_JWT", ""))
+    ipfs_gateway: str = field(default_factory=lambda: os.environ.get("IPFS_GATEWAY", "https://gateway.pinata.cloud/ipfs/"))
+    token_gate_contract: str = field(default_factory=lambda: os.environ.get("TOKEN_GATE_CONTRACT", ""))
+    token_gate_min_balance: int = field(default_factory=lambda: int(os.environ.get("TOKEN_GATE_MIN_BALANCE", "0")))
 
     @property
     def db_path(self) -> Path:
