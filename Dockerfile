@@ -22,7 +22,8 @@ COPY phenikaa_exporter.py phenikaa_login.py ./
 COPY server ./server
 COPY --from=css-builder /build/server/static/styles.css ./server/static/styles.css
 
-RUN pip install --no-cache-dir '.[server,web3]' \
+RUN pip install --no-cache-dir "abnf==2.2.0" \
+    && pip install --no-cache-dir '.[server,web3]' \
     && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/* /tmp/*
 

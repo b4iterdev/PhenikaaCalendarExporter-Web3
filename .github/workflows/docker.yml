@@ -33,6 +33,7 @@ jobs:
           npm ci
           npm run build
           python -m pip install --upgrade pip
+          python -m pip install "abnf==2.2.0"
           python -m pip install -e ".[server,web3]"
       - name: Run tests
         run: python -m unittest discover -s tests -v

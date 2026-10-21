@@ -11,7 +11,7 @@ server = ["cryptography>=41", "PyJWT[crypto]>=2.8", "playwright>=1.40"]
 web3 = [
     "eth-account>=0.13",
     "siwe>=4.4",
-    "abnf<3.0.0",
+    "abnf==2.2.0",
     "web3>=7.0",
     "requests>=2.31",
 ]
