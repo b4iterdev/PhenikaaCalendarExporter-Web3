@@ -3,10 +3,10 @@ name: Build server image
 on:
   push:
     branches: [main, dev, "dev/**"]
-    paths: ["server/**", "frontend/**", "phenikaa_exporter.py", "phenikaa_login.py", "pyproject.toml", "package.json", "package-lock.json", "tailwind.config.js", "Dockerfile", ".dockerignore", ".github/workflows/docker.yml"]
+    paths: ["server/**", "frontend/**", "tests/**", "phenikaa_exporter.py", "phenikaa_login.py", "pyproject.toml", "package.json", "package-lock.json", "tailwind.config.js", "Dockerfile", ".dockerignore", ".github/workflows/docker.yml"]
   pull_request:
     branches: [main, dev, "dev/**"]
-    paths: ["server/**", "frontend/**", "phenikaa_exporter.py", "phenikaa_login.py", "pyproject.toml", "package.json", "package-lock.json", "tailwind.config.js", "Dockerfile", ".dockerignore", ".github/workflows/docker.yml"]
+    paths: ["server/**", "frontend/**", "tests/**", "phenikaa_exporter.py", "phenikaa_login.py", "pyproject.toml", "package.json", "package-lock.json", "tailwind.config.js", "Dockerfile", ".dockerignore", ".github/workflows/docker.yml"]
   workflow_dispatch:
 
 concurrency:
