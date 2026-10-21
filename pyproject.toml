@@ -8,6 +8,12 @@ dependencies = ["openpyxl==3.1.5"]
 [project.optional-dependencies]
 login = ["playwright>=1.40"]
 server = ["cryptography>=41", "PyJWT[crypto]>=2.8", "playwright>=1.40"]
+web3 = [
+    "eth-account>=0.13",
+    "siwe>=4.4",
+    "web3>=7.0",
+    "requests>=2.31",
+]
 
 [project.scripts]
 phenikaa-calendar = "phenikaa_exporter:main"

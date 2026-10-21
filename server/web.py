@@ -42,9 +42,16 @@ from server.legal import privacy_policy_body, terms_body
 from server.login_broker import LoginBroker, validate_event
 from server.oidc import OidcClient, SignedSessions, new_authorization_state
 from server.status import StatusCollector
+from server.web3_utils import (
+    IpfsService,
+    TokenGatingService,
+    generate_siwe_nonce,
+    verify_siwe_signature,
+)
 
 APP_COOKIE = "phenikaa_server_session"
 OIDC_COOKIE = "phenikaa_oidc_transaction"
+SIWE_NONCE_COOKIE = "phenikaa_siwe_nonce"
 GOOGLE_OAUTH_COOKIE = "phenikaa_google_oauth_transaction"
 LANGUAGE_COOKIE = "phenikaa_ui_language"
 STATUS_LABELS = {
@@ -113,6 +120,8 @@ class ServerApplication:
         self.calendar_exporter = calendar_exporter
         self.profile_lock_timeout = profile_lock_timeout
         self.status_collector = status_collector or StatusCollector()
+        self.ipfs = IpfsService(jwt=config.pinata_jwt, gateway=config.ipfs_gateway)
+        self.token_gating = TokenGatingService(rpc_url=config.web3_rpc_url)
         self._api_v1_rate_lock = threading.Lock()
         self._api_v1_request_times: dict[str, list[float]] = {}
 
@@ -224,10 +233,15 @@ class ServerApplication:
             self._html(handler, 200, self._layout("Terms of Service", terms_body(self.config.policy_contact)))
             return
         if path == "/auth/login":
-            if self.config.auth_mode == "google":
+            if self.config.auth_mode == "web3":
+                self._web3_login_page(handler)
+            elif self.config.auth_mode == "google":
                 self._start_google_login(handler)
             else:
                 self._start_oidc(handler)
+            return
+        if path == "/auth/siwe/nonce":
+            self._web3_siwe_nonce(handler)
             return
         if path == "/auth/callback":
             self._finish_oidc(handler, urllib.parse.parse_qs(parsed.query))
@@ -304,6 +318,9 @@ class ServerApplication:
     def handle_post(self, handler: BaseHTTPRequestHandler) -> None:
         parsed = urllib.parse.urlsplit(handler.path)
         path = parsed.path
+        if path == "/auth/siwe/verify":
+            self._web3_siwe_verify(handler)
+            return
         if path == "/api/v1/tokens":
             self._api_v1_create_token(handler)
             return
@@ -864,11 +881,23 @@ class ServerApplication:
                 file_path = self._api_v1_ensure_xlsx(session_id) or file_path
             if file_path.is_file():
                 stat = file_path.stat()
-                exports.append({
+                item: dict[str, Any] = {
                     "format": extension,
                     "bytes": stat.st_size,
                     "updatedAt": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(),
-                })
+                }
+                # Pin to IPFS for Web3 decentralization
+                try:
+                    ctype = "application/json" if extension == "json" else "text/calendar" if extension == "ics" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    pinned = self.ipfs.pin_file(file_path.read_bytes(), filename=f"calendar.{extension}", content_type=ctype)
+                    item["ipfs"] = {
+                        "cid": pinned["cid"],
+                        "url": pinned["url"],
+                        "uri": f"ipfs://{pinned['cid']}",
+                    }
+                except Exception:
+                    pass
+                exports.append(item)
         self._json(
             handler, 200, api_ok({"exports": exports}),
             content_type="application/json; charset=utf-8",
@@ -1101,6 +1130,25 @@ class ServerApplication:
                 content_type=content_type,
             )
             return None
+
+        # Token-gating check if contract address and min balance are configured
+        if self.config.token_gate_contract and self.config.token_gate_min_balance > 0:
+            user = self.database.get_user(int(credential["owner_user_id"]))
+            oidc_sub = str(user.get("oidc_sub") or "") if user else ""
+            if oidc_sub.startswith("eth:"):
+                wallet_address = oidc_sub[4:]
+                has_balance = self.token_gating.check_token_balance(
+                    wallet_address,
+                    self.config.token_gate_contract,
+                    min_amount=self.config.token_gate_min_balance,
+                )
+                if not has_balance:
+                    self._json(
+                        handler, 403,
+                        api_err("token_gate_failed", f"Wallet {wallet_address} does not hold required token balance for contract {self.config.token_gate_contract}."),
+                        content_type=content_type,
+                    )
+                    return None
 
         return credential
 
@@ -1392,6 +1440,152 @@ class ServerApplication:
         })
         self._redirect(handler, "/", set_cookie=(APP_COOKIE, app_session, 8 * 60 * 60))
 
+    def _web3_siwe_nonce(self, handler: BaseHTTPRequestHandler) -> None:
+        nonce = generate_siwe_nonce()
+        cookie_val = self.signed_sessions.create({"nonce": nonce}, lifetime=300)
+        self._json(
+            handler, 200, {"nonce": nonce},
+            set_cookie=(SIWE_NONCE_COOKIE, cookie_val, 300)
+        )
+
+    def _web3_siwe_verify(self, handler: BaseHTTPRequestHandler) -> None:
+        cookie_val = self._cookie(handler, SIWE_NONCE_COOKIE) or ""
+        session_data = self.signed_sessions.verify(cookie_val)
+        if not session_data or "nonce" not in session_data:
+            self._json(handler, 400, {"ok": False, "error": "missing_or_expired_nonce"})
+            return
+
+        expected_nonce = str(session_data["nonce"])
+        try:
+            length = int(handler.headers.get("Content-Length", "0"))
+            body = handler.rfile.read(min(length, 1024 * 64)).decode("utf-8")
+            data = json.loads(body)
+            message = str(data.get("message", ""))
+            signature = str(data.get("signature", ""))
+        except Exception:
+            self._json(handler, 400, {"ok": False, "error": "invalid_payload"})
+            return
+
+        try:
+            host = handler.headers.get("Host", "localhost")
+            domain = host.split(":")[0] if host else None
+            verified = verify_siwe_signature(
+                message, signature, expected_nonce=expected_nonce, expected_domain=domain
+            )
+        except ValueError as e:
+            self._json(handler, 400, {"ok": False, "error": str(e)})
+            return
+
+        wallet_address = verified["address"]
+        csrf = secrets.token_urlsafe(24)
+        app_session = self.signed_sessions.create({
+            "sub": f"eth:{wallet_address.lower()}",
+            "name": f"{wallet_address[:6]}...{wallet_address[-4:]}",
+            "csrf": csrf,
+            "wallet": wallet_address,
+        })
+        self._json(
+            handler, 200, {"ok": True, "address": wallet_address},
+            set_cookie=(APP_COOKIE, app_session, 8 * 60 * 60)
+        )
+
+    def _web3_login_page(self, handler: BaseHTTPRequestHandler) -> None:
+        language = self._language(handler)
+        vi = language == "vi"
+        title = "Đăng nhập bằng ví Web3 (SIWE)" if vi else "Sign-In with Ethereum (Web3)"
+        desc = "Kết nối ví MetaMask, Rabby, Rainbow hoặc bất kỳ ví EVM nào để đăng nhập phi tập trung qua EIP-4361." if vi else "Connect your MetaMask, Rabby, Rainbow, or any EVM wallet to authenticate securely via EIP-4361."
+        btn_connect = "Kết nối ví & Ký xác thực" if vi else "Connect Wallet & Sign In"
+        connecting = "Đang kết nối..." if vi else "Connecting..."
+        signing = "Vui lòng ký tin nhắn trên ví..." if vi else "Please sign the message in your wallet..."
+        success_msg = "Xác thực thành công! Đang chuyển hướng..." if vi else "Signed in! Redirecting..."
+        no_wallet = "Không tìm thấy ví Web3 (như MetaMask). Vui lòng cài đặt extension ví!" if vi else "No Web3 wallet found. Please install MetaMask or another Web3 extension!"
+
+        body = f"""
+        <header class="site-header"><a class="brand" href="/"><span class="brand-mark">P</span><span>PHENIKAA <b>CALENDAR WEB3</b></span></a></header>
+        <main style="max-width:540px;margin:60px auto;padding:0 20px;">
+          <section class="settings-card" style="text-align:center;padding:40px 30px;">
+            <div style="font-size:48px;margin-bottom:12px;">🦊 🌐</div>
+            <p class="eyebrow">{'XÁC THỰC PHI TẬP TRUNG' if vi else 'DECENTRALIZED IDENTITY'}</p>
+            <h2 style="margin:8px 0 16px 0;">{title}</h2>
+            <p class="text-muted" style="margin-bottom:24px;line-height:1.5;">{desc}</p>
+
+            <div id="status-box" style="margin-bottom:20px;font-size:14px;color:hsl(var(--muted-foreground));min-height:24px;"></div>
+
+            <button type="button" class="button button--primary" id="btn-siwe" onclick="startSiwe()" style="width:100%;font-size:15px;padding:12px 20px;">
+              {btn_connect}
+            </button>
+            <div style="margin-top:20px;font-size:12px;color:hsl(var(--muted-foreground));">
+              {'Chuẩn EIP-4361 · Không cần mật khẩu · Dữ liệu gắn liền với ví của bạn' if vi else 'EIP-4361 Standard · Passwordless · Tied securely to your wallet'}
+            </div>
+          </section>
+        </main>
+
+        <script>
+        async function startSiwe() {{
+          const btn = document.getElementById('btn-siwe');
+          const status = document.getElementById('status-box');
+
+          if (!window.ethereum) {{
+            alert("{no_wallet}");
+            return;
+          }}
+
+          btn.disabled = true;
+          status.innerText = "{connecting}";
+
+          try {{
+            const accounts = await window.ethereum.request({{ method: 'eth_requestAccounts' }});
+            if (!accounts || !accounts[0]) {{
+              throw new Error('No account selected');
+            }}
+            const address = accounts[0];
+
+            // 1. Fetch SIWE nonce from server
+            const nonceResp = await fetch('/auth/siwe/nonce');
+            const {{ nonce }} = await nonceResp.json();
+
+            // 2. Prepare SIWE message
+            const domain = window.location.host;
+            const origin = window.location.origin;
+            const chainIdHex = await window.ethereum.request({{ method: 'eth_chainId' }});
+            const chainId = parseInt(chainIdHex, 16);
+            const issuedAt = new Date().toISOString();
+
+            const message = `${{domain}} wants you to sign in with your Ethereum account:\\n${{address}}\\n\\nSign in with Ethereum to Phenikaa Calendar Web3.\\n\\nURI: ${{origin}}\\nVersion: 1\\nChain ID: ${{chainId}}\\nNonce: ${{nonce}}\\nIssued At: ${{issuedAt}}`;
+
+            status.innerText = "{signing}";
+
+            // 3. Request signature from wallet
+            const signature = await window.ethereum.request({{
+              method: 'personal_sign',
+              params: [message, address],
+            }});
+
+            // 4. Verify signature on server
+            status.innerText = "Verifying signature...";
+            const verifyResp = await fetch('/auth/siwe/verify', {{
+              method: 'POST',
+              headers: {{ 'Content-Type': 'application/json' }},
+              body: JSON.stringify({{ message, signature }})
+            }});
+
+            const result = await verifyResp.json();
+            if (result.ok) {{
+              status.innerText = "{success_msg}";
+              window.location.href = '/dashboard';
+            }} else {{
+              status.innerText = "Error: " + (result.error || "Authentication failed");
+              btn.disabled = false;
+            }}
+          }} catch(err) {{
+            status.innerText = "Error: " + err.message;
+            btn.disabled = false;
+          }}
+        }}
+        </script>
+        """
+        self._html(handler, 200, self._layout("Web3 Login", body), no_store=True)
+
     def _start_google_oauth(self, handler: BaseHTTPRequestHandler, session: dict[str, Any]) -> None:
         if self.google_login is not None:
             self._start_google_login(handler, consent=True)
@@ -1490,8 +1684,20 @@ class ServerApplication:
             is_active = str(session["status"]) == "active"
             export_dir = self.config.exports_dir / str(session["id"])
             has_exports = is_active and (export_dir / "calendar.ics").is_file() and (export_dir / "calendar.json").is_file()
+            ipfs_links = ""
+            try:
+                if has_exports:
+                    ics_bytes = (export_dir / "calendar.ics").read_bytes()
+                    ics_cid = self.ipfs.pin_file(ics_bytes, "calendar.ics", "text/calendar")["cid"]
+                    ipfs_gateway = self.config.ipfs_gateway.rstrip("/") + "/"
+                    ipfs_links = f"""<div style="margin-top:8px;font-size:12px;display:flex;align-items:center;gap:8px;">
+                      <span style="color:hsl(var(--muted-foreground));">IPFS:</span>
+                      <a href="{ipfs_gateway}{ics_cid}" target="_blank" style="text-decoration:underline;font-family:monospace;">ipfs://{ics_cid[:10]}...{ics_cid[-6:]}</a>
+                    </div>"""
+            except Exception:
+                pass
             downloads = "" if not has_exports else f"""
-            <div class="session-section"><h3>{'Tệp đã xuất' if vi else 'Exports'}</h3><div class="action-row"><a class="button button--quiet" href="/sessions/{sid}/download/calendar.ics">Download ICS</a><a class="button button--quiet" href="/sessions/{sid}/download/calendar.json">Download JSON</a></div></div>"""
+            <div class="session-section"><h3>{'Tệp đã xuất' if vi else 'Exports'}</h3><div class="action-row"><a class="button button--quiet" href="/sessions/{sid}/download/calendar.ics">Download ICS</a><a class="button button--quiet" href="/sessions/{sid}/download/calendar.json">Download JSON</a></div>{ipfs_links}</div>"""
             sync_action = "" if not is_active else f"""<form method="post" action="/sessions/{sid}/sync"><input type="hidden" name="csrf" value="{csrf}"><button class="button button--primary">{'Đồng bộ lịch' if vi else 'Sync calendar'}</button></form>"""
             last_sync = html.escape(self._friendly_timestamp(session.get("last_sync_at"), language))
             summary.append(f"<div class=\"summary-item\"><span>{label}</span><strong>{status_label}</strong><small>{last_sync}</small></div>")
@@ -1581,6 +1787,12 @@ class ServerApplication:
             "auth_mode": self.config.auth_mode,
             "google_oauth": "configured" if self.config.google_oauth_configured else "not_configured",
             "database": "connected",
+            "web3": {
+                "chain_id": self.config.web3_chain_id,
+                "rpc_url": self.config.web3_rpc_url,
+                "ipfs_gateway": self.config.ipfs_gateway,
+                "token_gate": "active" if self.config.token_gate_contract else "disabled",
+            },
         }
         return self.status_collector.get_status(force_refresh=refresh, include_system=system_details)
 
@@ -2507,7 +2719,11 @@ class ServerApplication:
             f"""<div class="managed-session"><div><strong>{html.escape(str(session["label"]))}</strong><p>{html.escape(self._status_label(str(session["status"]), language))}</p></div><form method="post" action="/sessions/{html.escape(str(session["id"]))}/delete"><input type="hidden" name="csrf" value="{csrf}"><button class="button button--danger">{'Xóa phiên' if vi else 'Delete session'}</button></form></div>"""
             for session in sessions
         )
-        session_management = f"<section class=\"settings-card\"><p class=\"eyebrow\">{'QUẢN LÝ PHIÊN' if vi else 'SESSION MANAGEMENT'}</p><h2>{'Các phiên Phenikaa' if vi else 'Phenikaa sessions'}</h2>{session_settings or f'<p class=\"text-muted\">{"Chưa có phiên nào được kết nối." if vi else "No sessions connected."}</p>'}</section>"
+        empty_sessions_msg = "Chưa có phiên nào được kết nối." if vi else "No sessions connected."
+        empty_sessions_html = f'<p class="text-muted">{empty_sessions_msg}</p>'
+        eyebrow_text = "QUẢN LÝ PHIÊN" if vi else "SESSION MANAGEMENT"
+        heading_text = "Các phiên Phenikaa" if vi else "Phenikaa sessions"
+        session_management = f'<section class="settings-card"><p class="eyebrow">{eyebrow_text}</p><h2>{heading_text}</h2>{session_settings or empty_sessions_html}</section>'
         calendar_block = calendar_choice if has_google_calendar else ""
         body = f"""
         {self._navigation(user, identity, "settings", language)}
@@ -2554,7 +2770,12 @@ class ServerApplication:
             csrf = html.escape(str(identity["csrf"]))
             account = f"<span>{html.escape(str(user['display_name']))}</span><a class=\"nav-link{' nav-link--active' if active == 'settings' else ''}\" href=\"/settings\">{settings_label}</a><form method=\"post\" action=\"/auth/logout\"><input type=\"hidden\" name=\"csrf\" value=\"{csrf}\"><button class=\"text-button\">{sign_out}</button></form>"
         else:
-            login_label = ('Đăng nhập bằng Google' if vi else 'Sign in with Google') if self.config.auth_mode == 'google' else ('Đăng nhập' if vi else 'Sign in')
+            if self.config.auth_mode == "web3":
+                login_label = "Đăng nhập ví Web3" if vi else "Web3 Wallet Sign In"
+            elif self.config.auth_mode == "google":
+                login_label = "Đăng nhập bằng Google" if vi else "Sign in with Google"
+            else:
+                login_label = "Đăng nhập" if vi else "Sign in"
             account = f"<a class=\"button button--primary\" href=\"/auth/login\">{login_label}</a>"
         dashboard = f'<a class="nav-link{active_dashboard}" href="/dashboard">{dashboard_label}</a>' if user is not None else f'<a class="nav-link" href="/dashboard">{dashboard_label}</a>'
         developers = f'<a class="nav-link{active_developers}" href="/developers">{developers_label}</a>' if user is not None else ''
@@ -2967,11 +3188,23 @@ class ServerApplication:
         handler.end_headers()
         handler.wfile.write(body)
 
-    def _json(self, handler: BaseHTTPRequestHandler, status: int, value: object, *, clear_cookie: str | None = None, content_type: str = "application/json") -> None:
+    def _json(
+        self,
+        handler: BaseHTTPRequestHandler,
+        status: int,
+        value: object,
+        *,
+        clear_cookie: str | None = None,
+        set_cookie: tuple[str, str, int] | None = None,
+        content_type: str = "application/json",
+    ) -> None:
         body = json.dumps(value).encode("utf-8")
         handler.send_response(status)
         handler.send_header("Content-Type", content_type)
         handler.send_header("Cache-Control", "no-store")
+        if set_cookie:
+            name, c_val, lifetime = set_cookie
+            handler.send_header("Set-Cookie", f"{name}={c_val}; Path=/; Max-Age={lifetime}; HttpOnly; Secure; SameSite=Lax")
         self._send_clear_cookie(handler, clear_cookie)
         handler.send_header("Content-Length", str(len(body)))
         handler.end_headers()

@@ -1,3 +1,5 @@
+build/
+dist/
 .venv/
 node_modules/
 __pycache__/
