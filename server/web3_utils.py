@@ -29,7 +29,17 @@ def verify_siwe_signature(
     Returns dict with address, chain_id, and nonce if valid.
     Raises ValueError on invalid signature or mismatched parameters.
     """
+    raw_message = message
     try:
+        # Normalize address in raw message text to EIP-55 checksum format if needed
+        # (MetaMask window.ethereum.request('eth_requestAccounts') returns all-lowercase address,
+        # but pydantic validation in siwe-py strictly requires EIP-55 mixed-case checksum format)
+        lines = message.split("\n")
+        if len(lines) >= 2 and lines[1].startswith("0x"):
+            raw_addr = lines[1].strip()
+            if Web3.is_address(raw_addr):
+                lines[1] = Web3.to_checksum_address(raw_addr)
+                message = "\n".join(lines)
         siwe_msg = SiweMessage.from_message(message)
     except Exception as e:
         raise ValueError(f"invalid SIWE message: {e}") from e
@@ -42,8 +52,8 @@ def verify_siwe_signature(
 
     w3 = Web3()
     try:
-        # Recover address from signature using eth_account
-        encoded_msg = encode_defunct(text=message)
+        # Recover address from signature using eth_account against the EXACT text signed by user (raw_message)
+        encoded_msg = encode_defunct(text=raw_message)
         recovered_address = w3.eth.account.recover_message(encoded_msg, signature=signature)
     except Exception as e:
         raise ValueError(f"signature recovery failed: {e}") from e

@@ -48,6 +48,16 @@ class Web3IntegrationTestCase(unittest.TestCase):
         self.assertEqual(result["address"].lower(), acct.address.lower())
         self.assertEqual(result["chain_id"], 137)
 
+        # Test lowercase address normalization (MetaMask format)
+        lines = msg_str.split("\n")
+        lines[1] = lines[1].lower()
+        lowercase_msg = "\n".join(lines)
+        signed_low = acct.sign_message(encode_defunct(text=lowercase_msg))
+        result_low = verify_siwe_signature(
+            lowercase_msg, signed_low.signature.hex(), expected_nonce=nonce, expected_domain="localhost"
+        )
+        self.assertEqual(result_low["address"].lower(), acct.address.lower())
+
         # Nonce mismatch raises ValueError
         with self.assertRaises(ValueError):
             verify_siwe_signature(
