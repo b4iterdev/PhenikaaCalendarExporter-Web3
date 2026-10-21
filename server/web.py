@@ -2254,7 +2254,8 @@ class ServerApplication:
                 f'<span class="status status--operational">{"Hoạt động" if vi else "Active"}</span>'
             )
             scopes_badge = " ".join(f'<code style="font-size:11px;padding:2px 6px;border-radius:6px;background:hsl(var(--muted)/0.5);">{html.escape(s)}</code>' for s in t.get("scopes", []))
-            revoke_btn = "" if is_revoked else f'<button type="button" class="button button--danger" style="min-height:36px;padding:4px 12px;" onclick="revokeToken(\'{tid}\')">{"Thu hồi" if vi else "Revoke"}</button>'
+            revoke_label = "Thu hồi" if vi else "Revoke"
+            revoke_btn = "" if is_revoked else f'<button type="button" class="button button--danger" style="min-height:36px;padding:4px 12px;" onclick="revokeToken(\'{tid}\')">{revoke_label}</button>'
             token_rows.append(f"""
             <div class="managed-session" id="token-row-{tid}">
               <div style="flex:1;min-width:240px;">
@@ -2645,33 +2646,36 @@ class ServerApplication:
         }}
 
         function updateSnippets() {{
-          const {{ method, path, headers, body }} = getBuiltUrlAndOptions();
-          const fullUrl = window.location.origin + path;
+          const info = getBuiltUrlAndOptions();
+          const fullUrl = window.location.origin + info.path;
+          const NL = String.fromCharCode(10);
 
           // cURL snippet
-          let curl = `curl -X ${{method}} "${{fullUrl}}"`;
-          for (const [k, v] of Object.entries(headers)) {{
-            curl += ` \\\n  -H "${{k}}: ${{v}}"`;
+          const curlLines = ['curl -X ' + info.method + ' "' + fullUrl + '"'];
+          for (const [k, v] of Object.entries(info.headers)) {{
+            curlLines.push('  -H "' + k + ': ' + v + '"');
           }}
-          if (body) {{
-            curl += ` \\\n  -d '${{body.replace(/'/g, "'\\''")}}'`
+          if (info.body) {{
+            curlLines.push('  -d ' + JSON.stringify(info.body));
           }}
-          document.getElementById('snippet-curl').innerText = curl;
+          const BS = String.fromCharCode(92);
+          document.getElementById('snippet-curl').innerText = curlLines.join(' ' + BS + NL);
 
           // Fetch snippet
-          let fetchCode = `const resp = await fetch("${{path}}", {{\n  method: "${{method}}",\n`;
-          if (Object.keys(headers).length > 0) {{
-            fetchCode += `  headers: ${{\n`;
-            for (const [k, v] of Object.entries(headers)) {{
-              fetchCode += `    "${{k}}": "${{v}}",\n`;
-            }}
-            fetchCode += `  }},\n`;
+          const fetchLines = [
+            'const resp = await fetch("' + info.path + '", {{',
+            '  method: "' + info.method + '",'
+          ];
+          if (Object.keys(info.headers).length > 0) {{
+            fetchLines.push('  headers: ' + JSON.stringify(info.headers, null, 2) + ',');
           }}
-          if (body) {{
-            fetchCode += `  body: JSON.stringify(${{body}}),\n`;
+          if (info.body) {{
+            fetchLines.push('  body: JSON.stringify(' + info.body + '),');
           }}
-          fetchCode += `}});\nconst data = await resp.json();\nconsole.log(data);`;
-          document.getElementById('snippet-fetch').innerText = fetchCode;
+          fetchLines.push('}});');
+          fetchLines.push('const data = await resp.json();');
+          fetchLines.push('console.log(data);');
+          document.getElementById('snippet-fetch').innerText = fetchLines.join(NL);
         }}
 
         async function executePlayground() {{
