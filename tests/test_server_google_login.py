@@ -350,7 +350,7 @@ class GoogleLoginTests(unittest.TestCase):
     def test_startup_rejects_unknown_mode_and_missing_google_configuration(self):
         from server.__main__ import main
         with patch.dict("os.environ", {"PHENIKAA_SERVER_AUTH": "invalid"}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "must be oidc, google, or disabled"):
+            with self.assertRaisesRegex(RuntimeError, "must be web3, oidc, google, or disabled"):
                 main([])
         with patch.dict("os.environ", {"PHENIKAA_SERVER_AUTH": "google"}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "Google login requires"):
