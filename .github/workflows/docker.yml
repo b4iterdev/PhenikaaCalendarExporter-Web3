@@ -15,7 +15,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: b4iterdev/phenikaa-calendar-exporter
+  IMAGE_NAME: b4iterdev/phenikaa-calendar-web3
 
 jobs:
   test:
@@ -33,7 +33,7 @@ jobs:
           npm ci
           npm run build
           python -m pip install --upgrade pip
-          python -m pip install -e ".[server]"
+          python -m pip install -e ".[server,web3]"
       - name: Run tests
         run: python -m unittest discover -s tests -v
 
@@ -103,15 +103,9 @@ jobs:
             exit 1
           fi
           image="${REGISTRY}/${IMAGE_NAME}@${IMAGE_DIGEST}"
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            manifest=clusters/production/pca/deployment.json
-            name="phenikaa-server"
-            ns="pca"
-          else
-            manifest=clusters/production/pca-dev/deployment.json
-            name="phenikaa-server-dev"
-            ns="dev"
-          fi
+          manifest=clusters/production/pca-web3/deployment.json
+          name="phenikaa-server-web3"
+          ns="web3"
           if [ -f "$manifest" ]; then
             jq -e --arg name "$name" --arg ns "$ns" '
               .kind == "Deployment" and
