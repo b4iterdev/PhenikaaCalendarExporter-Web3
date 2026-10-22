@@ -16,7 +16,7 @@
 \usepackage{caption}
 \usepackage{subcaption}
 \usepackage{url}
-\def\UrlBreaks{\do\/\do-}
+\def\UrlBreaks{\do\/\do-\do\_}
 \usepackage{hyperref}
 
 % Headheight configuration
@@ -44,8 +44,9 @@
 }
 
 % Table columns
-\newcolumntype{C}{>{\centering\arraybackslash}X}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
 \newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\newcolumntype{C}{>{\centering\arraybackslash}X}
 
 % Custom listings for JSON and Python
 \lstdefinelanguage{json}{
@@ -106,7 +107,7 @@
 \begin{abstract}
 Quản lý lịch học và lịch thi là một nhu cầu thiết yếu đối với sinh viên trong các cơ sở giáo dục đại học. Tuy nhiên, các hệ thống Cổng thông tin đào tạo hiện nay thường vận hành theo mô hình khép kín và phụ thuộc hoàn toàn vào các nhà cung cấp định danh tập trung (Identity Providers - IdP) như Google OAuth hoặc OpenID Connect (OIDC). Mô hình này bộc lộ những hạn chế về quyền riêng tư dữ liệu, nguy cơ phụ thuộc nền tảng và rủi ro điểm lỗi đơn lẻ (Single Point of Failure).
 
-Báo cáo nghiên cứu học thuật này đề xuất một kiến trúc hệ thống phi tập trung (\textit{Decentralized Architecture}), tích hợp toàn diện các giao thức Web3 vào việc trích xuất và đồng bộ dữ liệu học tập thông qua dự án thực nghiệm \textbf{Phenikaa Calendar Exporter - Web3 Version} (\texttt{PhenikaaCalendarExporter-Web3}). Đóng góp học thuật và kỹ thuật của công trình bao gồm:
+Báo cáo nghiên cứu học thuật này đề xuất một kiến trúc hệ thống phi tập trung (\textit{Decentralized Architecture}), tích hợp toàn diện các giao thức Web3 vào việc trích xuất và đồng bộ dữ liệu học tập thông qua dự án thực nghiệm \textbf{Phenikaa Calendar Exporter (Web3 Version)}. Đóng góp học thuật và kỹ thuật của công trình bao gồm:
 (1) Xây dựng mô hình định danh tự chủ (Self-Sovereign Identity) dựa trên giao thức \textit{Sign-In with Ethereum} (SIWE - EIP-4361), giải quyết thách thức tương thích giữa chuẩn mã hóa địa chỉ EIP-55 Checksum và định dạng chữ thường của các nhà cung cấp ví EVM;
 (2) Thiết kế cơ chế lưu trữ phân tán bất biến cho các tệp lịch học chuẩn hóa (.ics, .xlsx, .json) trên mạng IPFS (InterPlanetary File System) thông qua định danh nội dung (CIDv1) kết hợp cổng dịch vụ Pinata;
 (3) Triển khai mô hình kiểm soát truy cập và điều phối hạn mức API tầng ứng dụng dựa trên hợp đồng thông minh on-chain (Token-Gating) thông qua hàm \texttt{balanceOf} của chuẩn ERC-20 / ERC-721 trên mạng EVM Layer-2;
@@ -157,7 +158,7 @@ Kiến trúc phân tầng của hệ thống \texttt{PhenikaaCalendarExporter-We
 \caption{So sánh thành phần kiến trúc giữa bản Tiêu chuẩn và bản Web3}
 \label{tab:architecture_comparison}
 \small
-\begin{tabularx}{\textwidth}{p{3.5cm} p{5.5cm} p{5.5cm}}
+\begin{tabularx}{\textwidth}{p{3.2cm} >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}X}
 \toprule
 \textbf{Thành phần} & \textbf{Phiên bản Gốc (Non-Web3)} & \textbf{Phiên bản Web3 (\texttt{pca-web3})} \\
 \midrule
@@ -165,7 +166,7 @@ Kiến trúc phân tầng của hệ thống \texttt{PhenikaaCalendarExporter-We
 \textbf{Cơ chế xác thực} & OAuth 2.0 PKCE / OIDC Exchange & SIWE EIP-4361 (\texttt{personal\_sign}) \\
 \textbf{Chuẩn hóa địa chỉ} & Không áp dụng & EIP-55 Mixed-Case Checksum \\
 \textbf{Lưu trữ tệp xuất} & Hệ thống tệp PVC k8s (\texttt{/data/exports}) & Ghim phân tán IPFS (Pinata API / CIDv1) \\
-\textbf{Kiểm soát API / Quota} & Rate-limiting RAM + Scopes SQLite & Token-Gating (Smart Contract ERC-20/721) \\
+\textbf{Kiểm soát API / Quota} & Giới hạn RAM + Scopes SQLite & Token-Gating (Hợp đồng ERC-20/721) \\
 \textbf{Môi trường K3s} & Namespace \texttt{pca} \& \texttt{dev} & Namespace \texttt{web3} (cô lập 100\%) \\
 \textbf{Chiến lược Rollout} & \texttt{Recreate} $\rightarrow$ \texttt{RollingUpdate} & \texttt{RollingUpdate} (MaxSurge=1, MaxUnavail=0) \\
 \bottomrule
@@ -193,7 +194,7 @@ Thay thế hoàn toàn quy trình chuyển hướng IdP truyền thống, giao t
     Issued At: \{issuedAt\}
     \end{quote}
     \item \textbf{Ký ngoài chuỗi (Off-chain Signature):} Người dùng thực hiện ký chuỗi thông điệp bằng khóa riêng tử thông qua phương thức \texttt{personal\_sign}. Khóa riêng không bao giờ rời khỏi ví.
-    \item \textbf{Xác minh chữ ký và Khởi tạo phiên:} Client gửi payload JSON gồm \texttt{\{message, signature\}} đến endpoint \texttt{POST /auth/siwe/verify}. Máy chủ giải mã chữ ký, phục hồi địa chỉ công khai của người ký, xác thực sự trùng khớp của Nonce và Domain, sau đó cấp phát cookie phiên \texttt{phenikaa\_server\_session} gắn với chủ thể \texttt{eth:<address>}.
+    \item \textbf{Xác minh chữ ký và Khởi tạo phiên:} Client gửi payload JSON gồm \texttt{\{message, signature\}} đến endpoint \texttt{POST /auth/siwe/verify}. Máy chủ giải mã chữ ký, phục hồi địa chỉ công khai của người ký, xác thực sự trùng khớp của Nonce và Domain, sau đó cấp phát cookie phiên \path{phenikaa_server_session} gắn với chủ thể \path{eth:<address>}.
 \end{enumerate}
 
 \subsubsection{Xử lý tương thích định dạng địa chỉ EIP-55 Checksum}
@@ -201,23 +202,28 @@ Trong quá trình triển khai, thư viện xác thực phía máy chủ (\textt
 
 Khi thông điệp chứa địa chỉ chữ thường được chuyển đến máy chủ, Pydantic báo lỗi ngoại lệ:
 \begin{quote}
+\small\raggedright
 \textit{ValueError, Message `address` must be in EIP-55 format [type=value\_error, input\_value=`0x9708...`]}
 \end{quote}
-Để khắc phục triệt để mà không làm phá vỡ tính hợp lệ của chữ ký mật mã, hàm \texttt{verify\_siwe\_signature} trong \texttt{server/web3\_utils.py} đã được tái cấu trúc:
+Để khắc phục triệt để mà không làm phá vỡ tính hợp lệ của chữ ký mật mã, hàm \path{verify_siwe_signature} trong \path{server/web3_utils.py} đã được tái cấu trúc:
 \begin{itemize}
-    \item Tách riêng bản văn ký gốc (\texttt{raw\_message}) làm đầu vào phục hồi chữ ký thông qua hàm \texttt{w3.eth.account.recover\_message}.
-    \item Tự động chuẩn hóa địa chỉ sang định dạng \texttt{Web3.to\_checksum\_address()} trước khi chuyển vào trình phân tích cú pháp \texttt{SiweMessage}.
+    \item Tách riêng bản văn ký gốc (\texttt{raw\_message}) làm đầu vào phục hồi chữ ký thông qua hàm xác minh \texttt{recover\_message}.
+    \item Tự động chuẩn hóa địa chỉ sang định dạng \texttt{to\_checksum\_address()} trước khi đưa vào bộ phân tích cú pháp \texttt{SiweMessage}.
 \end{itemize}
 
 \subsection{Lưu Trữ Phân Tán IPFS}
 Hệ thống tích hợp lớp dịch vụ \texttt{IpfsService} cho phép đưa các tệp xuất dữ liệu lịch học lên mạng phân tán IPFS \cite{benet2014ipfs}.
 
 \subsubsection{Cơ chế Pinning qua Pinata API}
-Khi biến môi trường \texttt{PINATA\_JWT} được cấu hình, dịch vụ giao tiếp với endpoint \url{https://api.pinata.cloud/pinning/pinFileToIPFS} thông qua giao thức HTTP POST đa phần:
+Khi cấu hình biến môi trường \texttt{PINATA\_JWT}, dịch vụ giao tiếp với endpoint Pinata API:
+\begin{center}
+\footnotesize\url{https://api.pinata.cloud/pinning/pinFileToIPFS}
+\end{center}
+thông qua giao thức HTTP POST đa phần (\texttt{multipart/form-data}):
 \begin{itemize}
     \item Các tệp xuất (\texttt{calendar.json}, \texttt{calendar.ics}, \texttt{calendar.xlsx}) được chuyển thành mảng byte và đẩy lên cổng Pinata.
     \item Pinata phân tán tệp đến các node IPFS toàn cầu và trả về mã băm nội dung \texttt{IpfsHash} (CIDv1).
-    \item Hệ thống liên kết CID này với giao diện bảng điều khiển thông qua cấu trúc URI chuẩn \texttt{ipfs://<CID>} và đường dẫn cổng truy cập công khai.
+    \item Hệ thống liên kết CID này với giao diện bảng điều khiển thông qua cấu trúc URI chuẩn \path{ipfs://<CID>} và đường dẫn cổng truy cập công khai.
 \end{itemize}
 
 \subsubsection{Bộ mô phỏng CIDv1 cục bộ (Deterministic Mock Fallback)}
@@ -244,8 +250,9 @@ Khi một yêu cầu API v1 mang Bearer Token được gửi đến, máy chủ 
     \item Nếu hệ thống cấu hình \texttt{TOKEN\_GATE\_CONTRACT} và \texttt{TOKEN\_GATE\_MIN\_BALANCE > 0}, dịch vụ sẽ khởi tạo hợp đồng và gọi hàm \texttt{balanceOf(wallet\_address)}.
     \item Nếu số dư trả về nhỏ hơn hạn mức tối thiểu, yêu cầu bị từ chối với mã lỗi \texttt{403 Forbidden}:
     \begin{quote}
-    \footnotesize\ttfamily
-    \{"ok": false, "error": \{"code": "token\_gate\_failed", "message": "Wallet does not hold required token balance."\}\}
+    \footnotesize\ttfamily\raggedright
+    \{"ok": false, "error": \{"code": "token\_gate\_failed",\\
+    \phantom{\{} "message": "Wallet does not hold required token balance."\}\}
     \end{quote}
 \end{enumerate}
 
@@ -265,7 +272,7 @@ Một trong những đóng góp quan trọng trong đợt nâng cấp này là g
 \subsection{Bàn thử nghiệm API trực tiếp (Interactive Playground)}
 Bàn thử nghiệm API cho phép nhà phát triển gửi yêu cầu trực tiếp đến máy chủ từ trình duyệt:
 \begin{itemize}
-    \item \textbf{Hỗ trợ toàn diện 11 endpoints v1:} Bao gồm các endpoint công khai (\texttt{/health}, \texttt{/status}), định danh (\texttt{/me}, \texttt{/tokens}), quản lý phiên (\texttt{/sessions}), lọc sự kiện lịch theo khoảng ngày (\texttt{/events}), danh sách tệp xuất (\texttt{/exports}), kích hoạt đồng bộ (\texttt{/sync}) và xuất nhanh một lần (\texttt{/export/one-shot}).
+    \item \textbf{Hỗ trợ toàn diện 11 endpoints v1:} Bao gồm các endpoint công khai (\path{/health}, \path{/status}), định danh (\path{/me}, \path{/tokens}), quản lý phiên (\path{/sessions}), lọc sự kiện lịch (\path{/events}), danh sách tệp xuất (\path{/exports}), kích hoạt đồng bộ (\path{/sync}) và xuất nhanh một lần (\path{/export/one-shot}).
     \item \textbf{Đo đạc hiệu năng trực tiếp:} Ghi nhận thời gian gửi nhận bằng \texttt{performance.now()} và hiển thị độ trễ tính theo mili-giây (ms) kèm badge HTTP status code.
     \item \textbf{Trình tạo mã nguồn mẫu thời gian thực:} Tự động phân tích các tham số, header và body JSON đang chọn để hiển thị khối lệnh \texttt{cURL} và mã JavaScript \texttt{fetch()} tương ứng, hỗ trợ copy nhanh vào dự án.
 \end{itemize}
@@ -293,13 +300,13 @@ Hạ tầng K3s trên nút \texttt{instance-20260613-0636} được phân tách 
 \caption{Cấu trúc tài nguyên K3s phân bổ theo Namespace}
 \label{tab:k8s_namespaces}
 \small
-\begin{tabularx}{\textwidth}{l L L C}
+\begin{tabularx}{\textwidth}{p{2.5cm} Y Y p{2.2cm}}
 \toprule
 \textbf{Namespace} & \textbf{Tên miền Ingress} & \textbf{Tên Volume PVC} & \textbf{Dung lượng} \\
 \midrule
-\texttt{pca} & \href{https://pca.b4iterdev.net.eu.org}{\texttt{pca.b4iterdev.net.eu.org}} & \texttt{phenikaa-data} & 5 GiB \\
-\texttt{dev} & \href{https://pca-dev.b4iterdev.net.eu.org}{\texttt{pca-dev.b4iterdev.net.eu.org}} & \texttt{phenikaa-data-dev} & 5 GiB \\
-\texttt{web3} & \href{https://pca-web3.b4iterdev.net.eu.org}{\texttt{pca-web3.b4iterdev.net.eu.org}} & \texttt{phenikaa-data-web3} & 5 GiB \\
+\texttt{pca} & \url{https://pca.b4iterdev.net.eu.org} & \texttt{phenikaa-data} & 5 GiB \\
+\texttt{dev} & \url{https://pca-dev.b4iterdev.net.eu.org} & \texttt{phenikaa-data-dev} & 5 GiB \\
+\texttt{web3} & \url{https://pca-web3.b4iterdev.net.eu.org} & \texttt{phenikaa-data-web3} & 5 GiB \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -336,11 +343,11 @@ Hệ thống đã được tái cấu hình đồng bộ sang chiến lược \t
 \section{Tự Động Hóa CI/CD \& Đồng Bộ GitOps}
 
 \subsection{Pipeline GitHub Actions}
-Quy trình tích hợp và phân phối liên tục (CI/CD) được tự động hóa thông qua workflow \texttt{.github/workflows/docker.yml}:
+Quy trình tích hợp và phân phối liên tục (CI/CD) được tự động hóa thông qua workflow \path{.github/workflows/docker.yml}:
 \begin{enumerate}
     \item \textbf{Khâu kiểm thử tự động (\texttt{test}):} Khởi chạy môi trường Python 3.12 và Node.js 22. Cài đặt các gói phụ thuộc với bản ghim cứng \texttt{abnf==2.2.0} (tránh lỗi xung đột ngữ pháp cú pháp RFC 5234 của \texttt{siwe-py}). Thực thi toàn bộ bộ kiểm thử đơn vị \texttt{python -m unittest discover -s tests -v}.
     \item \textbf{Khâu đóng gói Container đa kiến trúc (\texttt{build}):} Sử dụng Docker Buildx và QEMU để biên dịch hình ảnh Docker đa nền tảng (\texttt{linux/amd64} và \texttt{linux/arm64}). Đẩy image đã ký lên GitHub Container Registry (\texttt{ghcr.io/b4iterdev/phenikaa-calendar-web3}).
-    \item \textbf{Khâu cập nhật cấu hình GitOps (\texttt{deploy}):} Trích xuất mã băm bất biến của image (\texttt{IMAGE\_DIGEST}) dạng \texttt{sha256:...}, sử dụng mã thông báo bí mật \texttt{CLUSTER\_CONFIG\_TOKEN} để commit trực tiếp giá trị digest mới vào tệp kê khai \texttt{clusters/production/pca-web3/deployment.json} trong kho chứa \texttt{b4iterdev/cluster-config}.
+    \item \textbf{Khâu cập nhật cấu hình GitOps (\texttt{deploy}):} Trích xuất mã băm bất biến của image (\path{IMAGE_DIGEST}) dạng \path{sha256:...}, sử dụng mã thông báo bí mật \path{CLUSTER_CONFIG_TOKEN} để commit trực tiếp giá trị digest mới vào tệp kê khai \path{clusters/production/pca-web3/deployment.json} trong kho chứa \path{b4iterdev/cluster-config}.
 \end{enumerate}
 
 \subsection{Đồng bộ GitOps với Flux v2}
@@ -379,7 +386,7 @@ Nội dung 4 bài kiểm thử trọng tâm của Web3 bao gồm:
     \item \texttt{test\_siwe\_signature\_verification}: Kiểm tra tính đúng đắn của hàm khôi phục địa chỉ ví từ chữ ký mật mã, kiểm tra xử lý lỗi khi sai Nonce hoặc Domain, và xác minh khả năng tương thích địa chỉ chữ thường EIP-55.
     \item \texttt{test\_ipfs\_service\_mock\_pinning}: Xác minh định dạng CIDv1 và cấu trúc URL trả về từ dịch vụ lưu trữ IPFS mô phỏng.
     \item \texttt{test\_token\_gating\_service}: Giả lập hợp đồng thông minh ERC-20 và kiểm tra logic cho phép/chặn người dùng dựa trên ngưỡng số dư \texttt{min\_amount}.
-    \item \texttt{test\_web3\_siwe\_endpoints\_and\_login\_flow}: Khởi chạy phiên bản máy chủ hoàn chỉnh, thực hiện chu trình kiểm thử đầu-cuối (end-to-end): truy cập \texttt{/auth/login} $\rightarrow$ lấy nonce từ \texttt{/auth/siwe/nonce} $\rightarrow$ ký thông điệp $\rightarrow$ gửi xác thực đến \texttt{/auth/siwe/verify} $\rightarrow$ dùng session cookie truy cập bảng điều khiển \texttt{/dashboard}.
+    \item \texttt{test\_web3\_siwe\_endpoints\_and\_login\_flow}: Khởi chạy phiên bản máy chủ hoàn chỉnh, kiểm thử luồng end-to-end: truy cập \path{/auth/login} $\rightarrow$ lấy nonce từ \path{/auth/siwe/nonce} $\rightarrow$ ký thông điệp $\rightarrow$ gửi xác thực đến \path{/auth/siwe/verify} $\rightarrow$ truy cập bảng điều khiển \path{/dashboard}.
 \end{itemize}
 
 \subsection{Độ ổn định hệ thống và khả năng phục hồi lỗi}
