@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     oidc_sub TEXT UNIQUE NOT NULL,
     display_name TEXT NOT NULL DEFAULT '',
+    api_credits INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -98,6 +99,16 @@ CREATE TABLE IF NOT EXISTS api_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_api_tokens_owner_created_at
     ON api_tokens(owner_user_id, created_at);
+CREATE TABLE IF NOT EXISTS credit_transactions (
+    tx_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    network TEXT NOT NULL,
+    amount_wei TEXT NOT NULL,
+    credits_added INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_credit_transactions_user_created_at
+    ON credit_transactions(user_id, created_at);
 """
 
 GOOGLE_APP_CALENDAR_READY = "app_calendar_ready"
@@ -142,6 +153,32 @@ class Database:
         self._conn.executescript(SCHEMA)
         self._migrate_unique_session_owner()
         self._migrate_google_calendar_columns()
+        self._migrate_web3_credits()
+
+    def _migrate_web3_credits(self) -> None:
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                user_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(users)")}
+                if "api_credits" not in user_cols:
+                    self._conn.execute("ALTER TABLE users ADD COLUMN api_credits INTEGER NOT NULL DEFAULT 0")
+                self._conn.execute(
+                    "CREATE TABLE IF NOT EXISTS credit_transactions ("
+                    "tx_hash TEXT PRIMARY KEY,"
+                    "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
+                    "network TEXT NOT NULL,"
+                    "amount_wei TEXT NOT NULL,"
+                    "credits_added INTEGER NOT NULL,"
+                    "created_at TEXT NOT NULL)"
+                )
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_credit_transactions_user_created_at "
+                    "ON credit_transactions(user_id, created_at)"
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def _migrate_unique_session_owner(self) -> None:
         with self._lock:
@@ -293,6 +330,59 @@ class Database:
 
     def delete_user(self, user_id: int) -> None:
         self._write("DELETE FROM users WHERE id = ?", (user_id,))
+
+    # -- Web3 credits --------------------------------------------------
+
+    def get_user_credits(self, user_id: int) -> int:
+        row = self._fetchone("SELECT api_credits FROM users WHERE id = ?", (user_id,))
+        return int(row["api_credits"]) if row else 0
+
+    def deduct_user_credit(self, user_id: int, count: int = 1) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE users SET api_credits = api_credits - ? WHERE id = ? AND api_credits >= ?",
+                (count, user_id, count),
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def add_user_credits(
+        self,
+        user_id: int,
+        count: int,
+        tx_hash: str | None = None,
+        network: str = "polygon",
+        amount_wei: str = "0",
+    ) -> int:
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                if tx_hash:
+                    self._conn.execute(
+                        "INSERT INTO credit_transactions (tx_hash, user_id, network, amount_wei, credits_added, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (tx_hash, user_id, network, amount_wei, count, utc_now_iso()),
+                    )
+                self._conn.execute(
+                    "UPDATE users SET api_credits = api_credits + ? WHERE id = ?",
+                    (count, user_id),
+                )
+                cur = self._conn.execute("SELECT api_credits FROM users WHERE id = ?", (user_id,))
+                row = cur.fetchone()
+                self._conn.commit()
+                return int(row["api_credits"]) if row else 0
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def list_credit_transactions(self, user_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT tx_hash, network, amount_wei, credits_added, created_at FROM credit_transactions "
+                "WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+                (user_id, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
 
     # -- API tokens ----------------------------------------------------
 

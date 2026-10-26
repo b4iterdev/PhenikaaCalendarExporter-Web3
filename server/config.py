@@ -71,6 +71,9 @@ class ServerConfig:
     ipfs_gateway: str = field(default_factory=lambda: os.environ.get("IPFS_GATEWAY", "https://gateway.pinata.cloud/ipfs/"))
     token_gate_contract: str = field(default_factory=lambda: os.environ.get("TOKEN_GATE_CONTRACT", ""))
     token_gate_min_balance: int = field(default_factory=lambda: int(os.environ.get("TOKEN_GATE_MIN_BALANCE", "0")))
+    token_gate_vip_balance: int = field(default_factory=lambda: int(os.environ.get("TOKEN_GATE_VIP_BALANCE", "100")))
+    web3_treasury_address: str = field(default_factory=lambda: os.environ.get("WEB3_TREASURY_ADDRESS", ""))
+    web3_credits_per_unit: int = field(default_factory=lambda: int(os.environ.get("WEB3_CREDITS_PER_UNIT", "1000")))
 
     @property
     def db_path(self) -> Path:

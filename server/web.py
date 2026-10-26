@@ -9,6 +9,7 @@ import os
 import math
 import secrets
 import shutil
+import sqlite3
 import tempfile
 import threading
 import time
@@ -182,6 +183,9 @@ class ServerApplication:
         if path == "/api/v1/me":
             self._api_v1_me(handler)
             return
+        if path == "/api/v1/account/credits":
+            self._api_v1_account_credits(handler)
+            return
         if path == "/api/v1/tokens":
             self._api_v1_list_tokens(handler)
             return
@@ -345,6 +349,9 @@ class ServerApplication:
             return
         if path == "/api/v1/export/one-shot":
             self._api_v1_one_shot(handler, urllib.parse.parse_qs(parsed.query))
+            return
+        if path == "/api/v1/account/topup":
+            self._api_v1_account_topup(handler)
             return
         if path.startswith("/api/v1"):
             self._api_v1_error_response(handler, 404, "not_found", "API route not found.")
@@ -1102,6 +1109,20 @@ class ServerApplication:
 
         return None
 
+    def _calculate_user_tier_and_limit(self, wallet_address: str) -> tuple[str, int, int]:
+        """Determine rate limit tier based on on-chain token/NFT holding balance.
+
+        Returns (tier_name, requests_per_minute, token_balance).
+        """
+        if not self.config.token_gate_contract:
+            return ("standard", 60, 0)
+        bal = self.token_gating.get_token_balance(wallet_address, self.config.token_gate_contract)
+        if self.config.token_gate_vip_balance > 0 and bal >= self.config.token_gate_vip_balance:
+            return ("vip", 300, bal)
+        if self.config.token_gate_min_balance > 0 and bal >= self.config.token_gate_min_balance:
+            return ("holder", 60, bal)
+        return ("standard", 10, bal)
+
     def _api_v1_require_bearer(
         self,
         handler: BaseHTTPRequestHandler,
@@ -1118,11 +1139,6 @@ class ServerApplication:
             )
             return None
 
-        wait = self._api_v1_rate_check("tok:" + str(credential["token_id"]), 60)
-        if wait:
-            self._api_v1_rate_limited_response(handler, wait)
-            return None
-
         if required_scope not in credential["scopes"]:
             self._json(
                 handler, 403,
@@ -1131,24 +1147,56 @@ class ServerApplication:
             )
             return None
 
-        # Token-gating check if contract address and min balance are configured
+        user_id = int(credential["owner_user_id"])
+        user = self.database.get_user(user_id)
+        oidc_sub = str(user.get("oidc_sub") or "") if user else ""
+        wallet_address = oidc_sub[4:] if oidc_sub.startswith("eth:") else ""
+
+        tier, rate_limit, token_balance = self._calculate_user_tier_and_limit(wallet_address)
+        credential["user_tier"] = tier
+        credential["rate_limit"] = rate_limit
+        credential["token_balance"] = token_balance
+        credential["wallet_address"] = wallet_address
+
+        # Token-gating check: if contract configured, wallet must hold min balance OR have top-up credits
         if self.config.token_gate_contract and self.config.token_gate_min_balance > 0:
-            user = self.database.get_user(int(credential["owner_user_id"]))
-            oidc_sub = str(user.get("oidc_sub") or "") if user else ""
-            if oidc_sub.startswith("eth:"):
-                wallet_address = oidc_sub[4:]
-                has_balance = self.token_gating.check_token_balance(
-                    wallet_address,
-                    self.config.token_gate_contract,
-                    min_amount=self.config.token_gate_min_balance,
+            user_credits = self.database.get_user_credits(user_id)
+            if token_balance < self.config.token_gate_min_balance and user_credits <= 0:
+                self._json(
+                    handler, 403,
+                    api_err(
+                        "token_gate_failed",
+                        f"Wallet {wallet_address or 'none'} does not hold required token balance for contract {self.config.token_gate_contract} and has no credits.",
+                        {
+                            "tier": tier,
+                            "tokenBalance": token_balance,
+                            "minBalance": self.config.token_gate_min_balance,
+                            "credits": user_credits,
+                        },
+                    ),
+                    content_type=content_type,
                 )
-                if not has_balance:
-                    self._json(
-                        handler, 403,
-                        api_err("token_gate_failed", f"Wallet {wallet_address} does not hold required token balance for contract {self.config.token_gate_contract}."),
-                        content_type=content_type,
-                    )
-                    return None
+                return None
+
+        wait = self._api_v1_rate_check("tok:" + str(credential["token_id"]), rate_limit)
+        if wait:
+            # Over rate limit: check if user has credits to burn for burst
+            if self.database.deduct_user_credit(user_id, 1):
+                pass
+            else:
+                user_credits = self.database.get_user_credits(user_id)
+                self._api_v1_rate_limited_response(
+                    handler,
+                    wait,
+                    details={
+                        "tier": tier,
+                        "rateLimit": rate_limit,
+                        "retryAfter": wait,
+                        "tokenBalance": token_balance,
+                        "credits": user_credits,
+                    },
+                )
+                return None
 
         return credential
 
@@ -1157,7 +1205,8 @@ class ServerApplication:
         if credential is None:
             return
 
-        user = self.database.get_user(int(credential["owner_user_id"]))
+        user_id = int(credential["owner_user_id"])
+        user = self.database.get_user(user_id)
         if user is None:
             self._json(
                 handler, 401,
@@ -1166,19 +1215,126 @@ class ServerApplication:
             )
             return
 
+        oidc_sub = str(user.get("oidc_sub") or "")
+        wallet = oidc_sub[4:] if oidc_sub.startswith("eth:") else ""
+        tier, limit, balance = self._calculate_user_tier_and_limit(wallet)
+        credits = self.database.get_user_credits(user_id)
+
         self._json(
             handler,
             200,
             api_ok({
                 "user": {
-                    "id": int(user["id"]),
+                    "id": user_id,
                     "display_name": str(user.get("display_name") or ""),
+                    "wallet": wallet,
                 },
                 "token": {
                     "id": credential["token_id"],
                     "name": credential["name"],
                 },
                 "scopes": credential["scopes"],
+                "web3": {
+                    "tier": tier,
+                    "rateLimit": limit,
+                    "tokenBalance": balance,
+                    "credits": credits,
+                    "treasuryAddress": self.config.web3_treasury_address,
+                    "creditsPerUnit": self.config.web3_credits_per_unit,
+                },
+            }),
+            content_type="application/json; charset=utf-8",
+        )
+
+    def _api_v1_account_credits(self, handler: BaseHTTPRequestHandler) -> None:
+        credential = self._api_v1_require_bearer(handler, "me:read")
+        if credential is None:
+            return
+        user_id = int(credential["owner_user_id"])
+        user = self.database.get_user(user_id)
+        oidc_sub = str(user.get("oidc_sub") or "") if user else ""
+        wallet = oidc_sub[4:] if oidc_sub.startswith("eth:") else ""
+        tier, limit, balance = self._calculate_user_tier_and_limit(wallet)
+        credits = self.database.get_user_credits(user_id)
+        transactions = self.database.list_credit_transactions(user_id, limit=10)
+
+        self._json(
+            handler,
+            200,
+            api_ok({
+                "credits": credits,
+                "tier": tier,
+                "rateLimit": limit,
+                "tokenBalance": balance,
+                "wallet": wallet,
+                "treasuryAddress": self.config.web3_treasury_address,
+                "creditsPerUnit": self.config.web3_credits_per_unit,
+                "recentTransactions": transactions,
+            }),
+            content_type="application/json; charset=utf-8",
+        )
+
+    def _api_v1_account_topup(self, handler: BaseHTTPRequestHandler) -> None:
+        credential = self._api_v1_authenticate_bearer(handler)
+        if credential is not None:
+            user_id = int(credential["owner_user_id"])
+        else:
+            identity = self._identity(handler)
+            if identity is None:
+                self._api_v1_error_response(handler, 401, "invalid_auth", "Authentication required.")
+                return
+            user = self.database.get_or_create_user(str(identity["sub"]))
+            user_id = int(user["id"])
+
+        try:
+            payload = self._api_v1_read_json_payload(handler)
+        except Exception as error:
+            self._api_v1_error_response(handler, 400, "invalid_request", str(error))
+            return
+
+        tx_hash = str(payload.get("txHash") or "").strip()
+        if not tx_hash:
+            self._api_v1_error_response(handler, 400, "invalid_request", "txHash is required.")
+            return
+
+        try:
+            verified = self.token_gating.verify_topup_tx(
+                tx_hash,
+                expected_recipient=self.config.web3_treasury_address,
+                min_confirmations=1,
+                credits_per_unit=self.config.web3_credits_per_unit,
+            )
+        except Exception as error:
+            self._api_v1_error_response(handler, 400, "topup_verification_failed", str(error))
+            return
+
+        credits_to_add = verified["credits"]
+        try:
+            total_credits = self.database.add_user_credits(
+                user_id,
+                credits_to_add,
+                tx_hash=verified["tx_hash"],
+                network=str(payload.get("network") or "polygon"),
+                amount_wei=str(verified["value_wei"]),
+            )
+        except sqlite3.IntegrityError:
+            self._api_v1_error_response(handler, 409, "duplicate_tx", "Transaction has already been credited.")
+            return
+
+        user = self.database.get_user(user_id)
+        oidc_sub = str(user.get("oidc_sub") or "") if user else ""
+        wallet = oidc_sub[4:] if oidc_sub.startswith("eth:") else ""
+        tier, limit, balance = self._calculate_user_tier_and_limit(wallet)
+
+        self._json(
+            handler,
+            200,
+            api_ok({
+                "txHash": verified["tx_hash"],
+                "creditsAdded": credits_to_add,
+                "totalCredits": total_credits,
+                "tier": tier,
+                "rateLimit": limit,
             }),
             content_type="application/json; charset=utf-8",
         )
@@ -1979,10 +2135,13 @@ class ServerApplication:
             return 0
 
     def _api_v1_rate_limited_response(
-        self, handler: BaseHTTPRequestHandler, retry_after: int
+        self, handler: BaseHTTPRequestHandler, retry_after: int, details: dict[str, Any] | None = None
     ) -> None:
+        err_details: dict[str, Any] = {"retryAfter": retry_after}
+        if details:
+            err_details.update(details)
         body = json.dumps(
-            api_err("rate_limited", "Too many requests; try again later.", {"retryAfter": retry_after})
+            api_err("rate_limited", "Too many requests; try again later.", err_details)
         ).encode("utf-8")
         handler.send_response(429)
         handler.send_header("Content-Type", "application/json; charset=utf-8")
@@ -2278,17 +2437,24 @@ class ServerApplication:
             for s in sessions
         )
 
+        oidc_sub = str(user.get("oidc_sub") or "")
+        wallet = oidc_sub[4:] if oidc_sub.startswith("eth:") else ""
+        tier, rate_limit, token_bal = self._calculate_user_tier_and_limit(wallet)
+        user_credits = self.database.get_user_credits(int(user["id"]))
+
         endpoints_meta = [
             ("GET /api/v1/health", "GET /api/v1/health (Kiểm tra hoạt động · Không cần token)" if vi else "GET /api/v1/health (Public Health · No token)"),
             ("GET /api/v1/status", "GET /api/v1/status (Trạng thái dịch vụ · Không cần token)" if vi else "GET /api/v1/status (Service Status · No token)"),
             ("GET /api/v1/me", "GET /api/v1/me (Hồ sơ token · me:read)" if vi else "GET /api/v1/me (Token Profile · me:read)"),
+            ("GET /api/v1/account/credits", "GET /api/v1/account/credits (Hạn mức & Số dư credits · me:read)" if vi else "GET /api/v1/account/credits (API Credits & Tier · me:read)"),
+            ("POST /api/v1/account/topup", "POST /api/v1/account/topup (Nạp credit qua Web3 Tx · me:read/Cookie)" if vi else "POST /api/v1/account/topup (Top-Up Credits via Tx · me:read/Cookie)"),
             ("GET /api/v1/tokens", "GET /api/v1/tokens (Danh sách token · tokens:read)" if vi else "GET /api/v1/tokens (List Tokens · tokens:read)"),
             ("GET /api/v1/sessions", "GET /api/v1/sessions (Danh sách phiên · sessions:read)" if vi else "GET /api/v1/sessions (List Sessions · sessions:read)"),
-            ("GET /api/v1/sessions/{{sessionId}}", "GET /api/v1/sessions/{{sessionId}} (Chi tiết phiên · sessions:read)" if vi else "GET /api/v1/sessions/{{sessionId}} (Session Detail · sessions:read)"),
-            ("GET /api/v1/sessions/{{sessionId}}/events", "GET /api/v1/sessions/{{sessionId}}/events (Lọc sự kiện · events:read)" if vi else "GET /api/v1/sessions/{{sessionId}}/events (Filter Events · events:read)"),
-            ("GET /api/v1/sessions/{{sessionId}}/exports", "GET /api/v1/sessions/{{sessionId}}/exports (Danh sách tệp xuất · sessions:read)" if vi else "GET /api/v1/sessions/{{sessionId}}/exports (List Exports · sessions:read)"),
-            ("POST /api/v1/sessions/{{sessionId}}/sync", "POST /api/v1/sessions/{{sessionId}}/sync (Kích hoạt đồng bộ · sync:write)" if vi else "POST /api/v1/sessions/{{sessionId}}/sync (Trigger Sync · sync:write)"),
-            ("GET /api/v1/sessions/{{sessionId}}/sync/runs", "GET /api/v1/sessions/{{sessionId}}/sync/runs (Lịch sử đồng bộ · sessions:read)" if vi else "GET /api/v1/sessions/{{sessionId}}/sync/runs (Sync Runs · sessions:read)"),
+            ("GET /api/v1/sessions/{sessionId}", "GET /api/v1/sessions/{sessionId} (Chi tiết phiên · sessions:read)" if vi else "GET /api/v1/sessions/{sessionId} (Session Detail · sessions:read)"),
+            ("GET /api/v1/sessions/{sessionId}/events", "GET /api/v1/sessions/{sessionId}/events (Lọc sự kiện · events:read)" if vi else "GET /api/v1/sessions/{sessionId}/events (Filter Events · events:read)"),
+            ("GET /api/v1/sessions/{sessionId}/exports", "GET /api/v1/sessions/{sessionId}/exports (Danh sách tệp xuất · sessions:read)" if vi else "GET /api/v1/sessions/{sessionId}/exports (List Exports · sessions:read)"),
+            ("POST /api/v1/sessions/{sessionId}/sync", "POST /api/v1/sessions/{sessionId}/sync (Kích hoạt đồng bộ · sync:write)" if vi else "POST /api/v1/sessions/{sessionId}/sync (Trigger Sync · sync:write)"),
+            ("GET /api/v1/sessions/{sessionId}/sync/runs", "GET /api/v1/sessions/{sessionId}/sync/runs (Lịch sử đồng bộ · sessions:read)" if vi else "GET /api/v1/sessions/{sessionId}/sync/runs (Sync Runs · sessions:read)"),
             ("POST /api/v1/export/one-shot", "POST /api/v1/export/one-shot (Xuất nhanh một lần · Không cần token)" if vi else "POST /api/v1/export/one-shot (One-Shot Export · No token)"),
         ]
         endpoint_options_html = "".join(
@@ -2325,6 +2491,42 @@ class ServerApplication:
               <button type="button" class="text-button" onclick="document.getElementById('new-token-alert').style.display='none'" style="font-size:20px;cursor:pointer;">&times;</button>
             </div>
           </div>
+
+          <!-- Section: Web3 Tier & Token-Gated Quota -->
+          <section class="settings-card" style="margin-bottom:24px;">
+            <p class="eyebrow">{'HẠN MỨC WEB3 & QUOTA' if vi else 'WEB3 TIER & API QUOTA'}</p>
+            <h2>{'Gói tài khoản & Nạp credit' if vi else 'Account Tier & API Top-Up'}</h2>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:16px;margin-top:16px;">
+              <div style="padding:16px;background:hsl(var(--muted)/0.3);border-radius:12px;border:1px solid hsl(var(--border));">
+                <span style="font-size:12px;color:hsl(var(--muted-foreground));display:block;margin-bottom:4px;">{'Cấp bậc tài khoản' if vi else 'Account Tier'}</span>
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <strong style="font-size:18px;text-transform:uppercase;">{tier}</strong>
+                  <span class="status status--operational">{rate_limit} req/min</span>
+                </div>
+                <small class="text-muted" style="display:block;margin-top:4px;">{'Nắm giữ' if vi else 'Holding'}: {token_bal} tokens</small>
+              </div>
+              <div style="padding:16px;background:hsl(var(--muted)/0.3);border-radius:12px;border:1px solid hsl(var(--border));">
+                <span style="font-size:12px;color:hsl(var(--muted-foreground));display:block;margin-bottom:4px;">{'Số dư Credit API' if vi else 'Prepaid API Credits'}</span>
+                <strong style="font-size:18px;color:hsl(var(--foreground));">{user_credits} <span style="font-size:13px;font-weight:normal;color:hsl(var(--muted-foreground));">{'lượt gọi' if vi else 'calls'}</span></strong>
+                <small class="text-muted" style="display:block;margin-top:4px;">{'Dùng khi vượt hạn mức hoặc chưa giữ token' if vi else 'Used for burst calls or un-gated access'}</small>
+              </div>
+              <div style="padding:16px;background:hsl(var(--muted)/0.3);border-radius:12px;border:1px solid hsl(var(--border));">
+                <span style="font-size:12px;color:hsl(var(--muted-foreground));display:block;margin-bottom:4px;">{'Ví kết nối' if vi else 'Connected Wallet'}</span>
+                <strong style="font-size:13px;font-family:monospace;word-break:break-all;">{wallet or ('Chưa gắn ví' if vi else 'No wallet')}</strong>
+                <small class="text-muted" style="display:block;margin-top:4px;">{f'1 POL = {self.config.web3_credits_per_unit} credits' if self.config.web3_treasury_address else 'Hybrid quota active'}</small>
+              </div>
+            </div>
+
+            <!-- Top up form -->
+            <div style="border-top:1px solid hsl(var(--border));margin-top:20px;padding-top:20px;">
+              <h3 style="font-size:15px;margin:0 0 10px 0;">{'Nạp Credit qua Transaction Hash' if vi else 'Top-Up Credits via Transaction Hash'}</h3>
+              <form id="topup-form" onsubmit="submitTopup(event)" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+                <input type="text" id="topup-tx" placeholder="0x..." style="flex:1;min-width:260px;font-family:monospace;font-size:13px;" required>
+                <button type="submit" class="button button--primary" id="btn-topup">{'Nạp Credit' if vi else 'Claim Credits'}</button>
+              </form>
+              <p id="topup-status" style="font-size:12px;margin:8px 0 0 0;display:none;"></p>
+            </div>
+          </section>
 
           <!-- Section: API Tokens Management -->
           <section class="settings-card" style="margin-bottom:24px;">
@@ -2648,16 +2850,52 @@ class ServerApplication:
           }}
         }}
 
+        async function submitTopup(e) {{
+          e.preventDefault();
+          const txHash = document.getElementById('topup-tx').value.trim();
+          const btn = document.getElementById('btn-topup');
+          const st = document.getElementById('topup-status');
+          btn.disabled = true;
+          st.style.display = 'block';
+          st.style.color = 'hsl(var(--muted-foreground))';
+          st.innerText = '{"Đang xác minh giao dịch trên blockchain..." if vi else "Verifying transaction on-chain..."}';
+          try {{
+            const resp = await fetch('/api/v1/account/topup', {{
+              method: 'POST',
+              headers: {{
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': CSRF_TOKEN
+              }},
+              body: JSON.stringify({{ txHash }})
+            }});
+            const res = await resp.json();
+            if (res.ok) {{
+              st.style.color = 'hsl(142 76% 36%)';
+              st.innerText = (res.data?.creditsAdded || '0') + ' {"credit đã được cộng thành công! Tải lại trang..." if vi else " credits successfully added! Reloading..."}';
+              setTimeout(() => location.reload(), 1500);
+            }} else {{
+              st.style.color = 'hsl(var(--destructive))';
+              st.innerText = 'Lỗi: ' + (res.error?.message || 'Không thể xác minh giao dịch');
+            }}
+          }} catch(err) {{
+            st.style.color = 'hsl(var(--destructive))';
+            st.innerText = 'Lỗi kết nối: ' + err.message;
+          }} finally {{
+            btn.disabled = false;
+          }}
+        }}
+
         function onEndpointChange() {{
           const ep = document.getElementById('play-endpoint').value;
           const [method, route] = ep.split(' ');
-          const hasSession = route.includes('{{sessionId}}');
+          const hasSession = route.includes('{{sessionId}}') || route.includes('{{{{sessionId}}}}');
           const isEvents = route.includes('/events');
           const isOneShot = route.includes('one-shot');
+          const isTopup = route.includes('account/topup');
 
           document.getElementById('group-session-id').style.display = hasSession ? 'block' : 'none';
           document.getElementById('group-events-range').style.display = isEvents ? 'grid' : 'none';
-          document.getElementById('group-body').style.display = isOneShot ? 'block' : 'none';
+          document.getElementById('group-body').style.display = (isOneShot || isTopup) ? 'block' : 'none';
 
           if (isOneShot) {{
             document.getElementById('play-body').value = JSON.stringify({{
@@ -2666,6 +2904,10 @@ class ServerApplication:
               userId: "YOUR_USER_ID",
               tokenJWT: "YOUR_TOKEN"
             }}, null, 2);
+          }} else if (isTopup) {{
+            document.getElementById('play-body').value = JSON.stringify({{
+              txHash: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+            }}, null, 2);
           }}
           updateSnippets();
         }}
@@ -2673,8 +2915,9 @@ class ServerApplication:
         function getBuiltUrlAndOptions() {{
           const ep = document.getElementById('play-endpoint').value;
           const [method, routeTemplate] = ep.split(' ');
-          const sid = document.getElementById('play-session-id').value.trim() || 'SESSION_ID';
-          let path = routeTemplate.replace('{{sessionId}}', sid);
+          const rawSid = document.getElementById('play-session-id').value.trim();
+          const sid = (rawSid || 'SESSION_ID').replace(/^\\{{+|\\}}+$/g, '');
+          let path = routeTemplate.replace('{{{{sessionId}}}}', sid).replace('{{sessionId}}', sid);
 
           if (path.includes('/events')) {{
             const st = document.getElementById('play-start-date').value;
@@ -2689,7 +2932,7 @@ class ServerApplication:
           }}
 
           let body = null;
-          if (method === 'POST' && path.includes('one-shot')) {{
+          if (method === 'POST' && (path.includes('one-shot') || path.includes('account/topup'))) {{
             headers['Content-Type'] = 'application/json';
             body = document.getElementById('play-body').value;
           }}

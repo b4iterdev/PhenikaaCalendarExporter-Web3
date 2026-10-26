@@ -1,8 +1,11 @@
 """Tests for Web3 authentication (SIWE), IPFS pinning, and token gating."""
 
+import hashlib
 import json
+import sqlite3
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from eth_account import Account
@@ -196,6 +199,168 @@ class Web3IntegrationTestCase(unittest.TestCase):
                 dash_html = resp.read().decode("utf-8")
                 self.assertIn("Calendar sessions", dash_html)
                 conn.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+                database.close()
+
+    def test_token_gating_service_caching_and_topup_verification(self):
+        service = TokenGatingService(rpc_url="https://polygon-rpc.com")
+        with patch.object(service, "_w3") as mock_w3:
+            mock_w3.is_connected.return_value = True
+            mock_contract = MagicMock()
+            mock_contract.functions.balanceOf.return_value.call.return_value = 42
+            mock_w3.eth.contract.return_value = mock_contract
+
+            wallet = "0x0000000000000000000000000000000000000001"
+            contract = "0x0000000000000000000000000000000000000002"
+            bal1 = service.get_token_balance(wallet, contract)
+            self.assertEqual(bal1, 42)
+
+            # Change return value to verify cache is used
+            mock_contract.functions.balanceOf.return_value.call.return_value = 999
+            bal2 = service.get_token_balance(wallet, contract)
+            self.assertEqual(bal2, 42)  # Cached
+
+        # Topup verification with mock hash
+        mock_hash = "0xmock_" + "a" * 59
+        verified = service.verify_topup_tx(
+            mock_hash,
+            expected_recipient="0x000000000000000000000000000000000000bEEF",
+            credits_per_unit=1000,
+        )
+        self.assertEqual(verified["credits"], 1000)
+        self.assertEqual(verified["tx_hash"], mock_hash)
+
+        # Invalid format
+        with self.assertRaises(ValueError):
+            service.verify_topup_tx("invalid_tx_hash")
+
+    def test_database_credit_operations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "test.db"
+            database = Database(db_path)
+            try:
+                user = database.get_or_create_user("eth:0x123", "Test User")
+                uid = int(user["id"])
+                self.assertEqual(database.get_user_credits(uid), 0)
+
+                # Add credits
+                tx_hash = "0x" + "1" * 64
+                new_bal = database.add_user_credits(uid, 500, tx_hash=tx_hash, amount_wei=str(10**18))
+                self.assertEqual(new_bal, 500)
+                self.assertEqual(database.get_user_credits(uid), 500)
+
+                # Prevent duplicate tx
+                with self.assertRaises(sqlite3.IntegrityError):
+                    database.add_user_credits(uid, 500, tx_hash=tx_hash)
+
+                # Deduct credits
+                deducted = database.deduct_user_credit(uid, 200)
+                self.assertTrue(deducted)
+                self.assertEqual(database.get_user_credits(uid), 300)
+
+                # Deduct more than balance
+                failed_deduct = database.deduct_user_credit(uid, 500)
+                self.assertFalse(failed_deduct)
+                self.assertEqual(database.get_user_credits(uid), 300)
+
+                txs = database.list_credit_transactions(uid)
+                self.assertEqual(len(txs), 1)
+                self.assertEqual(txs[0]["tx_hash"], tx_hash)
+            finally:
+                database.close()
+
+    def test_hybrid_token_gating_and_topup_api(self):
+        import http.client
+        import threading
+        from pathlib import Path
+        from cryptography.fernet import Fernet
+        from server.login_broker import ProfileLocks
+        from tests.test_server_web import RecordingSync
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = ServerConfig(
+                state_dir=Path(directory),
+                host="127.0.0.1",
+                port=0,
+                auth_mode="web3",
+                token_gate_contract="0x0000000000000000000000000000000000000002",
+                token_gate_min_balance=10,
+                token_gate_vip_balance=100,
+            )
+            config.ensure_dirs()
+            database = Database(config.db_path)
+            vault = TokenVault(Fernet.generate_key())
+            signed_sessions = SignedSessions(b"x" * 32)
+            broker = LoginBroker(config, locks=ProfileLocks())
+            sync = RecordingSync()
+            app = ServerApplication(config, database, vault, signed_sessions, broker, sync, None)
+            server = make_server(app)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+
+            port = server.server_port
+            try:
+                # Create user and API token
+                user = database.get_or_create_user("eth:0x1111111111111111111111111111111111111111", "Web3 User")
+                uid = int(user["id"])
+                raw_token = "phk_testtokengatinghybrid123456789"
+                thash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+                database.create_api_token(
+                    token_id="tok1",
+                    owner_user_id=uid,
+                    token_hash=thash,
+                    token_prefix=raw_token[:12],
+                    scopes=["me:read", "sessions:read"],
+                )
+
+                # Mock token balance: 0 tokens, 0 credits -> 403 token_gate_failed
+                with patch.object(app.token_gating, "get_token_balance", return_value=0):
+                    conn = http.client.HTTPConnection("127.0.0.1", port)
+                    conn.request("GET", "/api/v1/me", headers={"Authorization": f"Bearer {raw_token}"})
+                    resp = conn.getresponse()
+                    self.assertEqual(resp.status, 403)
+                    body = json.loads(resp.read().decode("utf-8"))
+                    self.assertEqual(body["error"]["code"], "token_gate_failed")
+                    conn.close()
+
+                    # Top up credits via /api/v1/account/topup
+                    mock_tx = "0xmock_" + "b" * 59
+                    conn = http.client.HTTPConnection("127.0.0.1", port)
+                    conn.request(
+                        "POST",
+                        "/api/v1/account/topup",
+                        body=json.dumps({"txHash": mock_tx}),
+                        headers={"Authorization": f"Bearer {raw_token}", "Content-Type": "application/json"},
+                    )
+                    resp = conn.getresponse()
+                    self.assertEqual(resp.status, 200)
+                    topup_data = json.loads(resp.read().decode("utf-8"))
+                    self.assertTrue(topup_data["ok"])
+                    self.assertEqual(topup_data["data"]["creditsAdded"], 1000)
+                    conn.close()
+
+                    # Now with credits > 0, API call succeeds even with 0 tokens!
+                    conn = http.client.HTTPConnection("127.0.0.1", port)
+                    conn.request("GET", "/api/v1/me", headers={"Authorization": f"Bearer {raw_token}"})
+                    resp = conn.getresponse()
+                    self.assertEqual(resp.status, 200)
+                    me_data = json.loads(resp.read().decode("utf-8"))
+                    self.assertTrue(me_data["ok"])
+                    self.assertEqual(me_data["data"]["web3"]["credits"], 1000)
+                    self.assertEqual(me_data["data"]["web3"]["tier"], "standard")
+                    conn.close()
+
+                    # Check GET /api/v1/account/credits
+                    conn = http.client.HTTPConnection("127.0.0.1", port)
+                    conn.request("GET", "/api/v1/account/credits", headers={"Authorization": f"Bearer {raw_token}"})
+                    resp = conn.getresponse()
+                    self.assertEqual(resp.status, 200)
+                    credits_data = json.loads(resp.read().decode("utf-8"))
+                    self.assertEqual(credits_data["data"]["credits"], 1000)
+                    self.assertEqual(len(credits_data["data"]["recentTransactions"]), 1)
+                    conn.close()
             finally:
                 server.shutdown()
                 server.server_close()

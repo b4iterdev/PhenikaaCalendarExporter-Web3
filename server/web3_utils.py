@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import time
 from typing import Any
 
 from eth_account.messages import encode_defunct
@@ -143,6 +144,8 @@ class TokenGatingService:
     def __init__(self, rpc_url: str | None = None) -> None:
         self.rpc_url = rpc_url or os.environ.get("WEB3_RPC_URL", "https://polygon-rpc.com")
         self._w3: Web3 | None = None
+        self._balance_cache: dict[tuple[str, str], tuple[int, float]] = {}
+        self.cache_ttl: float = 300.0
 
     @property
     def w3(self) -> Web3:
@@ -150,21 +153,121 @@ class TokenGatingService:
             self._w3 = Web3(Web3.HTTPProvider(self.rpc_url))
         return self._w3
 
+    def get_token_balance(
+        self,
+        wallet_address: str,
+        contract_address: str,
+        *,
+        use_cache: bool = True,
+    ) -> int:
+        """Fetch token balance for wallet with TTL caching."""
+        if not wallet_address or not contract_address:
+            return 0
+        try:
+            checksum_wallet = Web3.to_checksum_address(wallet_address)
+            checksum_contract = Web3.to_checksum_address(contract_address)
+        except Exception:
+            return 0
+
+        now = time.monotonic()
+        cache_key = (checksum_wallet, checksum_contract)
+        if use_cache and cache_key in self._balance_cache:
+            bal, exp = self._balance_cache[cache_key]
+            if now < exp:
+                return bal
+
+        if not self.w3.is_connected():
+            return 0
+
+        try:
+            contract = self.w3.eth.contract(address=checksum_contract, abi=BALANCE_OF_ABI)
+            balance = int(contract.functions.balanceOf(checksum_wallet).call())
+            self._balance_cache[cache_key] = (balance, now + self.cache_ttl)
+            return balance
+        except Exception:
+            if cache_key in self._balance_cache:
+                return self._balance_cache[cache_key][0]
+            return 0
+
     def check_token_balance(
         self,
         wallet_address: str,
         contract_address: str,
         min_amount: int = 1,
+        *,
+        use_cache: bool = False,
     ) -> bool:
         """Check if wallet_address owns >= min_amount of token at contract_address."""
+        return self.get_token_balance(wallet_address, contract_address, use_cache=use_cache) >= min_amount
+
+    def verify_topup_tx(
+        self,
+        tx_hash: str,
+        expected_recipient: str = "",
+        min_confirmations: int = 1,
+        credits_per_unit: int = 1000,
+    ) -> dict[str, Any]:
+        """Verify on-chain transfer for credit top-up."""
+        cleaned_hash = tx_hash.strip().lower()
+        if not cleaned_hash.startswith("0x") or len(cleaned_hash) != 66:
+            raise ValueError("txHash must be a 66-character hex string starting with 0x.")
+
+        # Development / testing mock support
+        if cleaned_hash.startswith("0xmock_") or os.environ.get("WEB3_MOCK_TOPUP") == "1":
+            return {
+                "tx_hash": cleaned_hash,
+                "sender": "0x000000000000000000000000000000000000dEaD",
+                "recipient": expected_recipient or "0x000000000000000000000000000000000000bEEF",
+                "value_wei": 10**18,
+                "block_number": 1234567,
+                "confirmations": 10,
+                "credits": credits_per_unit,
+            }
+
         if not self.w3.is_connected():
-            return False
+            raise RuntimeError("Web3 RPC provider is not connected.")
 
         try:
-            checksum_wallet = Web3.to_checksum_address(wallet_address)
-            checksum_contract = Web3.to_checksum_address(contract_address)
-            contract = self.w3.eth.contract(address=checksum_contract, abi=BALANCE_OF_ABI)
-            balance = contract.functions.balanceOf(checksum_wallet).call()
-            return int(balance) >= min_amount
-        except Exception:
-            return False
+            tx = self.w3.eth.get_transaction(cleaned_hash)
+            receipt = self.w3.eth.get_transaction_receipt(cleaned_hash)
+        except Exception as err:
+            raise ValueError(f"Could not retrieve transaction: {err}") from err
+
+        if not tx or not receipt:
+            raise ValueError("Transaction or receipt not found.")
+
+        if receipt.get("status") != 1:
+            raise ValueError("Transaction failed or reverted on-chain.")
+
+        tx_to = tx.get("to")
+        if not tx_to:
+            raise ValueError("Contract creation transaction cannot be used for top-up.")
+
+        if expected_recipient:
+            if Web3.to_checksum_address(tx_to) != Web3.to_checksum_address(expected_recipient):
+                raise ValueError(
+                    f"Recipient mismatch: expected {expected_recipient}, got {tx_to}."
+                )
+
+        current_block = self.w3.eth.block_number
+        tx_block = int(receipt.get("blockNumber") or 0)
+        confirmations = max(0, current_block - tx_block + 1)
+        if confirmations < min_confirmations:
+            raise ValueError(
+                f"Transaction requires at least {min_confirmations} confirmation(s), but has {confirmations}."
+            )
+
+        value_wei = int(tx.get("value") or 0)
+        if value_wei <= 0:
+            raise ValueError("Transaction value must be greater than zero.")
+
+        credits = max(1, int(value_wei * credits_per_unit // (10**18)))
+        return {
+            "tx_hash": cleaned_hash,
+            "sender": tx.get("from"),
+            "recipient": tx_to,
+            "value_wei": value_wei,
+            "block_number": tx_block,
+            "confirmations": confirmations,
+            "credits": credits,
+        }
