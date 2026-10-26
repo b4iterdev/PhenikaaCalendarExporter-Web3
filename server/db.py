@@ -351,7 +351,7 @@ class Database:
         user_id: int,
         count: int,
         tx_hash: str | None = None,
-        network: str = "polygon",
+        network: str = "celo",
         amount_wei: str = "0",
     ) -> int:
         with self._lock:

@@ -65,8 +65,10 @@ class ServerConfig:
     google_client_secret: str = field(default_factory=lambda: os.environ.get("PHENIKAA_GOOGLE_CLIENT_SECRET", ""))
     google_redirect_uri: str = field(default_factory=lambda: os.environ.get("PHENIKAA_GOOGLE_REDIRECT_URI", ""))
     # Web3 / SIWE / IPFS / Token Gating configuration
-    web3_rpc_url: str = field(default_factory=lambda: os.environ.get("WEB3_RPC_URL", "https://polygon-rpc.com"))
-    web3_chain_id: int = field(default_factory=lambda: int(os.environ.get("WEB3_CHAIN_ID", "137")))
+    web3_rpc_url: str = field(default_factory=lambda: os.environ.get("WEB3_RPC_URL", "https://forno.celo.org"))
+    web3_chain_id: int = field(default_factory=lambda: int(os.environ.get("WEB3_CHAIN_ID", "42220")))
+    web3_currency_symbol: str = field(default_factory=lambda: os.environ.get("WEB3_CURRENCY_SYMBOL", "CELO"))
+    web3_network_name: str = field(default_factory=lambda: os.environ.get("WEB3_NETWORK_NAME", "Celo Mainnet"))
     pinata_jwt: str = field(default_factory=lambda: os.environ.get("PINATA_JWT", ""))
     ipfs_gateway: str = field(default_factory=lambda: os.environ.get("IPFS_GATEWAY", "https://gateway.pinata.cloud/ipfs/"))
     token_gate_contract: str = field(default_factory=lambda: os.environ.get("TOKEN_GATE_CONTRACT", ""))

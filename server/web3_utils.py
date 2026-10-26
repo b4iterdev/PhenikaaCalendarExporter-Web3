@@ -142,7 +142,7 @@ class TokenGatingService:
     """Verify on-chain token or NFT ownership for gated API access / VIP limits."""
 
     def __init__(self, rpc_url: str | None = None) -> None:
-        self.rpc_url = rpc_url or os.environ.get("WEB3_RPC_URL", "https://polygon-rpc.com")
+        self.rpc_url = rpc_url or os.environ.get("WEB3_RPC_URL", "https://forno.celo.org")
         self._w3: Web3 | None = None
         self._balance_cache: dict[tuple[str, str], tuple[int, float]] = {}
         self.cache_ttl: float = 300.0

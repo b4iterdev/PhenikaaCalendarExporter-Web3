@@ -2444,6 +2444,9 @@ class ServerApplication:
         treasury_address = self.config.web3_treasury_address.strip() or wallet or "0x970884ba261a13231698a8345dc3e3c06ea22812"
         chain_id = self.config.web3_chain_id
         credits_per_unit = self.config.web3_credits_per_unit
+        currency_symbol = self.config.web3_currency_symbol
+        network_name = self.config.web3_network_name
+        rpc_url = self.config.web3_rpc_url
 
         endpoints_meta = [
             ("GET /api/v1/health", "GET /api/v1/health (Kiểm tra hoạt động · Không cần token)" if vi else "GET /api/v1/health (Public Health · No token)"),
@@ -2516,7 +2519,7 @@ class ServerApplication:
               <div style="padding:16px;background:hsl(var(--card));border-radius:12px;border:1px solid hsl(var(--border));">
                 <span style="font-size:12px;font-weight:600;color:hsl(var(--muted-foreground));display:block;margin-bottom:4px;">{'Ví kết nối' if vi else 'Connected Wallet'}</span>
                 <strong style="font-size:13px;font-family:monospace;word-break:break-all;color:hsl(var(--foreground));">{wallet or ('Chưa gắn ví' if vi else 'No wallet')}</strong>
-                <small class="text-muted" style="display:block;margin-top:6px;font-size:12px;color:hsl(var(--muted-foreground));font-weight:500;">{f'1 POL = {credits_per_unit} credits' if treasury_address else 'Hybrid quota active'}</small>
+                <small class="text-muted" style="display:block;margin-top:6px;font-size:12px;color:hsl(var(--muted-foreground));font-weight:500;">{f'1 {currency_symbol} = {credits_per_unit} credits' if treasury_address else 'Hybrid quota active'}</small>
               </div>
             </div>
 
@@ -2524,24 +2527,24 @@ class ServerApplication:
             <div style="border-top:1px solid hsl(var(--border));margin-top:20px;padding-top:20px;">
               <h3 style="font-size:16px;margin:0 0 8px 0;color:hsl(var(--foreground));">{'Nạp Credit trực tiếp qua ví Web3' if vi else 'In-Website Web3 Wallet Top-Up'}</h3>
               <p style="margin:0 0 14px 0;font-size:13px;color:hsl(var(--muted-foreground));">
-                {'Chuyển token (POL) trực tiếp từ ví trình duyệt (MetaMask, Rabby...). Hệ thống tự động xác nhận và cộng credit vào tài khoản.' if vi else 'Send tokens (POL) directly via your browser wallet (MetaMask, Rabby...). The system automatically confirms and credits your account.'}
+                {'Chuyển token (' + currency_symbol + ') trực tiếp từ ví trình duyệt (MetaMask, Rabby...). Hệ thống tự động xác nhận và cộng credit vào tài khoản.' if vi else 'Send tokens (' + currency_symbol + ') directly via your browser wallet (MetaMask, Rabby...). The system automatically confirms and credits your account.'}
               </p>
 
               <div style="display:grid;gap:12px;max-width:550px;">
                 <div>
                   <span style="font-size:12px;font-weight:600;color:hsl(var(--foreground));display:block;margin-bottom:6px;">{'Chọn nhanh gói nạp' if vi else 'Select Amount'}</span>
                   <div style="display:flex;flex-wrap:wrap;gap:8px;">
-                    <button type="button" class="button button--secondary" style="min-height:36px;padding:4px 12px;font-size:12px;" onclick="setTopupAmount(0.1)">0.1 POL <small style="margin-left:4px;opacity:0.8;">(+{int(credits_per_unit * 0.1)})</small></button>
-                    <button type="button" class="button button--secondary" style="min-height:36px;padding:4px 12px;font-size:12px;" onclick="setTopupAmount(0.5)">0.5 POL <small style="margin-left:4px;opacity:0.8;">(+{int(credits_per_unit * 0.5)})</small></button>
-                    <button type="button" class="button button--secondary" style="min-height:36px;padding:4px 12px;font-size:12px;" onclick="setTopupAmount(1.0)">1.0 POL <small style="margin-left:4px;opacity:0.8;">(+{int(credits_per_unit * 1.0)})</small></button>
-                    <button type="button" class="button button--secondary" style="min-height:36px;padding:4px 12px;font-size:12px;" onclick="setTopupAmount(5.0)">5.0 POL <small style="margin-left:4px;opacity:0.8;">(+{int(credits_per_unit * 5.0)})</small></button>
+                    <button type="button" class="button button--secondary" style="min-height:36px;padding:4px 12px;font-size:12px;" onclick="setTopupAmount(0.1)">0.1 {currency_symbol} <small style="margin-left:4px;opacity:0.8;">(+{int(credits_per_unit * 0.1)})</small></button>
+                    <button type="button" class="button button--secondary" style="min-height:36px;padding:4px 12px;font-size:12px;" onclick="setTopupAmount(0.5)">0.5 {currency_symbol} <small style="margin-left:4px;opacity:0.8;">(+{int(credits_per_unit * 0.5)})</small></button>
+                    <button type="button" class="button button--secondary" style="min-height:36px;padding:4px 12px;font-size:12px;" onclick="setTopupAmount(1.0)">1.0 {currency_symbol} <small style="margin-left:4px;opacity:0.8;">(+{int(credits_per_unit * 1.0)})</small></button>
+                    <button type="button" class="button button--secondary" style="min-height:36px;padding:4px 12px;font-size:12px;" onclick="setTopupAmount(5.0)">5.0 {currency_symbol} <small style="margin-left:4px;opacity:0.8;">(+{int(credits_per_unit * 5.0)})</small></button>
                   </div>
                 </div>
 
                 <div style="display:flex;gap:10px;align-items:center;margin-top:4px;">
                   <div style="position:relative;flex:1;max-width:240px;">
                     <input type="number" id="wallet-amount" step="0.01" min="0.01" value="1.0" oninput="updateEstimatedCredits()" style="width:100%;box-sizing:border-box;min-height:42px;padding:8px 50px 8px 12px;border-radius:10px;border:1px solid hsl(var(--border));background:hsl(var(--card));color:hsl(var(--foreground));font-size:14px;font-weight:600;">
-                    <span style="position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:12px;font-weight:bold;color:hsl(var(--muted-foreground));">POL</span>
+                    <span style="position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:12px;font-weight:bold;color:hsl(var(--muted-foreground));">{currency_symbol}</span>
                   </div>
                   <span id="estimated-credits" style="font-size:13px;font-weight:600;color:hsl(var(--primary));">+{credits_per_unit} credits</span>
                 </div>
@@ -2891,6 +2894,9 @@ class ServerApplication:
         const TREASURY_ADDRESS = "{treasury_address}";
         const TARGET_CHAIN_ID = {chain_id};
         const CREDITS_PER_UNIT = {credits_per_unit};
+        const CURRENCY_SYMBOL = "{currency_symbol}";
+        const NETWORK_NAME = "{network_name}";
+        const RPC_URL = "{rpc_url}";
 
         function setTopupAmount(amt) {{
           document.getElementById('wallet-amount').value = amt;
@@ -2930,11 +2936,27 @@ class ServerApplication:
             try {{
               const currentChain = await window.ethereum.request({{ method: 'eth_chainId' }});
               if (parseInt(currentChain, 16) !== TARGET_CHAIN_ID) {{
-                st.innerText = '{"Đang chuyển sang mạng Polygon..." if vi else "Switching to Polygon network..."}';
-                await window.ethereum.request({{
-                  method: 'wallet_switchEthereumChain',
-                  params: [{{ chainId: '0x' + TARGET_CHAIN_ID.toString(16) }}]
-                }});
+                st.innerText = '{"Đang chuyển mạng..." if vi else "Switching network..."}';
+                try {{
+                  await window.ethereum.request({{
+                    method: 'wallet_switchEthereumChain',
+                    params: [{{ chainId: '0x' + TARGET_CHAIN_ID.toString(16) }}]
+                  }});
+                }} catch (switchErr) {{
+                  if (switchErr.code === 4902 || (switchErr.message && switchErr.message.includes('wallet_addEthereumChain'))) {{
+                    st.innerText = '{"Đang thêm mạng vào ví..." if vi else "Adding network to wallet..."}';
+                    await window.ethereum.request({{
+                      method: 'wallet_addEthereumChain',
+                      params: [{{
+                        chainId: '0x' + TARGET_CHAIN_ID.toString(16),
+                        chainName: NETWORK_NAME,
+                        nativeCurrency: {{ name: CURRENCY_SYMBOL, symbol: CURRENCY_SYMBOL, decimals: 18 }},
+                        rpcUrls: [RPC_URL],
+                        blockExplorerUrls: ['https://celoscan.io']
+                      }}]
+                    }});
+                  }}
+                }}
               }}
             }} catch (switchErr) {{
               console.warn('Network switch warning:', switchErr);
@@ -2977,7 +2999,7 @@ class ServerApplication:
                 'Content-Type': 'application/json',
                 'X-CSRF-Token': CSRF_TOKEN
               }},
-              body: JSON.stringify({{ txHash }})
+              body: JSON.stringify({{ txHash, network: 'celo' }})
             }});
             const res = await resp.json();
             if (res.ok) {{
