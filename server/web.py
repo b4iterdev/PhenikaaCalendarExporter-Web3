@@ -2441,6 +2441,9 @@ class ServerApplication:
         wallet = oidc_sub[4:] if oidc_sub.startswith("eth:") else ""
         tier, rate_limit, token_bal = self._calculate_user_tier_and_limit(wallet)
         user_credits = self.database.get_user_credits(int(user["id"]))
+        treasury_address = self.config.web3_treasury_address.strip() or wallet or "0x970884ba261a13231698a8345dc3e3c06ea22812"
+        chain_id = self.config.web3_chain_id
+        credits_per_unit = self.config.web3_credits_per_unit
 
         endpoints_meta = [
             ("GET /api/v1/health", "GET /api/v1/health (Kiểm tra hoạt động · Không cần token)" if vi else "GET /api/v1/health (Public Health · No token)"),
@@ -2513,18 +2516,53 @@ class ServerApplication:
               <div style="padding:16px;background:hsl(var(--card));border-radius:12px;border:1px solid hsl(var(--border));">
                 <span style="font-size:12px;font-weight:600;color:hsl(var(--muted-foreground));display:block;margin-bottom:4px;">{'Ví kết nối' if vi else 'Connected Wallet'}</span>
                 <strong style="font-size:13px;font-family:monospace;word-break:break-all;color:hsl(var(--foreground));">{wallet or ('Chưa gắn ví' if vi else 'No wallet')}</strong>
-                <small class="text-muted" style="display:block;margin-top:6px;font-size:12px;color:hsl(var(--muted-foreground));font-weight:500;">{f'1 POL = {self.config.web3_credits_per_unit} credits' if self.config.web3_treasury_address else 'Hybrid quota active'}</small>
+                <small class="text-muted" style="display:block;margin-top:6px;font-size:12px;color:hsl(var(--muted-foreground));font-weight:500;">{f'1 POL = {credits_per_unit} credits' if treasury_address else 'Hybrid quota active'}</small>
               </div>
             </div>
 
-            <!-- Top up form -->
+            <!-- In-Website Web3 Top-up -->
             <div style="border-top:1px solid hsl(var(--border));margin-top:20px;padding-top:20px;">
-              <h3 style="font-size:15px;margin:0 0 10px 0;color:hsl(var(--foreground));">{'Nạp Credit qua Transaction Hash' if vi else 'Top-Up Credits via Transaction Hash'}</h3>
-              <form id="topup-form" onsubmit="submitTopup(event)" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
-                <input type="text" id="topup-tx" placeholder="0x..." style="flex:1;min-width:260px;font-family:monospace;font-size:13px;padding:8px 12px;border-radius:10px;border:1px solid hsl(var(--border));background:hsl(var(--card));color:hsl(var(--foreground));" required>
-                <button type="submit" class="button button--primary" id="btn-topup">{'Nạp Credit' if vi else 'Claim Credits'}</button>
-              </form>
-              <p id="topup-status" style="font-size:12px;margin:8px 0 0 0;display:none;"></p>
+              <h3 style="font-size:16px;margin:0 0 8px 0;color:hsl(var(--foreground));">{'Nạp Credit trực tiếp qua ví Web3' if vi else 'In-Website Web3 Wallet Top-Up'}</h3>
+              <p style="margin:0 0 14px 0;font-size:13px;color:hsl(var(--muted-foreground));">
+                {'Chuyển token (POL) trực tiếp từ ví trình duyệt (MetaMask, Rabby...). Hệ thống tự động xác nhận và cộng credit vào tài khoản.' if vi else 'Send tokens (POL) directly via your browser wallet (MetaMask, Rabby...). The system automatically confirms and credits your account.'}
+              </p>
+
+              <div style="display:grid;gap:12px;max-width:550px;">
+                <div>
+                  <span style="font-size:12px;font-weight:600;color:hsl(var(--foreground));display:block;margin-bottom:6px;">{'Chọn nhanh gói nạp' if vi else 'Select Amount'}</span>
+                  <div style="display:flex;flex-wrap:wrap;gap:8px;">
+                    <button type="button" class="button button--secondary" style="min-height:36px;padding:4px 12px;font-size:12px;" onclick="setTopupAmount(0.1)">0.1 POL <small style="margin-left:4px;opacity:0.8;">(+{int(credits_per_unit * 0.1)})</small></button>
+                    <button type="button" class="button button--secondary" style="min-height:36px;padding:4px 12px;font-size:12px;" onclick="setTopupAmount(0.5)">0.5 POL <small style="margin-left:4px;opacity:0.8;">(+{int(credits_per_unit * 0.5)})</small></button>
+                    <button type="button" class="button button--secondary" style="min-height:36px;padding:4px 12px;font-size:12px;" onclick="setTopupAmount(1.0)">1.0 POL <small style="margin-left:4px;opacity:0.8;">(+{int(credits_per_unit * 1.0)})</small></button>
+                    <button type="button" class="button button--secondary" style="min-height:36px;padding:4px 12px;font-size:12px;" onclick="setTopupAmount(5.0)">5.0 POL <small style="margin-left:4px;opacity:0.8;">(+{int(credits_per_unit * 5.0)})</small></button>
+                  </div>
+                </div>
+
+                <div style="display:flex;gap:10px;align-items:center;margin-top:4px;">
+                  <div style="position:relative;flex:1;max-width:240px;">
+                    <input type="number" id="wallet-amount" step="0.01" min="0.01" value="1.0" oninput="updateEstimatedCredits()" style="width:100%;box-sizing:border-box;min-height:42px;padding:8px 50px 8px 12px;border-radius:10px;border:1px solid hsl(var(--border));background:hsl(var(--card));color:hsl(var(--foreground));font-size:14px;font-weight:600;">
+                    <span style="position:absolute;right:12px;top:50%;transform:translateY(-50%);font-size:12px;font-weight:bold;color:hsl(var(--muted-foreground));">POL</span>
+                  </div>
+                  <span id="estimated-credits" style="font-size:13px;font-weight:600;color:hsl(var(--primary));">+{credits_per_unit} credits</span>
+                </div>
+
+                <div style="margin-top:6px;">
+                  <button type="button" class="button button--primary" id="btn-wallet-topup" onclick="payWithWallet()" style="min-height:42px;padding:8px 20px;font-size:14px;display:inline-flex;align-items:center;gap:8px;">
+                    {'⚡ Nạp ngay qua Ví (MetaMask)' if vi else '⚡ Pay & Top-Up via Web3 Wallet'}
+                  </button>
+                </div>
+              </div>
+
+              <!-- Manual hash fallback -->
+              <details style="margin-top:16px;font-size:13px;color:hsl(var(--muted-foreground));">
+                <summary style="cursor:pointer;font-weight:500;color:hsl(var(--foreground));margin-bottom:8px;">{'Hoặc nhập mã giao dịch (txHash) thủ công' if vi else 'Or claim with transaction hash manually'}</summary>
+                <form id="topup-form" onsubmit="submitTopup(event)" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:6px;">
+                  <input type="text" id="topup-tx" placeholder="0x..." style="flex:1;min-width:260px;font-family:monospace;font-size:13px;padding:8px 12px;border-radius:10px;border:1px solid hsl(var(--border));background:hsl(var(--card));color:hsl(var(--foreground));" required>
+                  <button type="submit" class="button button--secondary" id="btn-topup">{'Xác nhận' if vi else 'Claim'}</button>
+                </form>
+              </details>
+
+              <div id="topup-status" style="display:none;margin-top:14px;padding:12px 16px;border-radius:10px;font-size:13px;background:hsl(var(--muted)/0.4);border:1px solid hsl(var(--border));"></div>
             </div>
           </section>
 
@@ -2850,6 +2888,113 @@ class ServerApplication:
           }}
         }}
 
+        const TREASURY_ADDRESS = "{treasury_address}";
+        const TARGET_CHAIN_ID = {chain_id};
+        const CREDITS_PER_UNIT = {credits_per_unit};
+
+        function setTopupAmount(amt) {{
+          document.getElementById('wallet-amount').value = amt;
+          updateEstimatedCredits();
+        }}
+
+        function updateEstimatedCredits() {{
+          const amt = parseFloat(document.getElementById('wallet-amount').value) || 0;
+          const credits = Math.max(1, Math.round(amt * CREDITS_PER_UNIT));
+          document.getElementById('estimated-credits').innerText = '+' + credits.toLocaleString() + ' credits';
+        }}
+
+        async function payWithWallet() {{
+          if (!window.ethereum) {{
+            alert('{"Vui lòng cài đặt ví Web3 (MetaMask, Rabby...) để nạp trực tiếp!" if vi else "Please install a Web3 wallet (MetaMask, Rabby...) to top-up directly!"}');
+            return;
+          }}
+          const amountInput = document.getElementById('wallet-amount');
+          const amountPol = parseFloat(amountInput.value);
+          if (isNaN(amountPol) || amountPol <= 0) {{
+            alert('{"Vui lòng nhập số lượng hợp lệ" if vi else "Please enter a valid amount"}');
+            return;
+          }}
+
+          const btn = document.getElementById('btn-wallet-topup');
+          const st = document.getElementById('topup-status');
+          btn.disabled = true;
+          st.style.display = 'block';
+          st.style.color = 'hsl(var(--foreground))';
+          st.innerText = '{"Đang kết nối ví..." if vi else "Connecting wallet..."}';
+
+          try {{
+            const accounts = await window.ethereum.request({{ method: 'eth_requestAccounts' }});
+            if (!accounts || !accounts[0]) throw new Error('No account connected');
+            const userAddress = accounts[0];
+
+            try {{
+              const currentChain = await window.ethereum.request({{ method: 'eth_chainId' }});
+              if (parseInt(currentChain, 16) !== TARGET_CHAIN_ID) {{
+                st.innerText = '{"Đang chuyển sang mạng Polygon..." if vi else "Switching to Polygon network..."}';
+                await window.ethereum.request({{
+                  method: 'wallet_switchEthereumChain',
+                  params: [{{ chainId: '0x' + TARGET_CHAIN_ID.toString(16) }}]
+                }});
+              }}
+            }} catch (switchErr) {{
+              console.warn('Network switch warning:', switchErr);
+            }}
+
+            const weiAmount = BigInt(Math.round(amountPol * 1e6)) * BigInt(1e12);
+            const valueHex = '0x' + weiAmount.toString(16);
+
+            st.innerText = '{"Vui lòng xác nhận giao dịch trong ví của bạn..." if vi else "Please confirm transaction in your wallet..."}';
+            const txHash = await window.ethereum.request({{
+              method: 'eth_sendTransaction',
+              params: [{{
+                from: userAddress,
+                to: TREASURY_ADDRESS,
+                value: valueHex
+              }}]
+            }});
+
+            st.style.color = 'hsl(var(--primary))';
+            st.innerText = '{"Đã gửi giao dịch: " if vi else "Transaction broadcasted: "} ' + txHash.slice(0, 10) + '...' + txHash.slice(-8) + '. {"Đang chờ xác nhận trên blockchain..." if vi else "Waiting for on-chain confirmation..."}';
+
+            for (let i = 0; i < 20; i++) {{
+              try {{
+                const receipt = await window.ethereum.request({{
+                  method: 'eth_getTransactionReceipt',
+                  params: [txHash]
+                }});
+                if (receipt && receipt.status === '0x1') break;
+                if (receipt && receipt.status === '0x0') throw new Error('Transaction reverted on blockchain');
+              }} catch (e) {{
+                if (e.message && e.message.includes('reverted')) throw e;
+              }}
+              await new Promise(r => setTimeout(r, 2000));
+            }}
+
+            st.innerText = '{"Đang cộng hạn mức credit trên máy chủ..." if vi else "Crediting API quota on server..."}';
+            const resp = await fetch('/api/v1/account/topup', {{
+              method: 'POST',
+              headers: {{
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': CSRF_TOKEN
+              }},
+              body: JSON.stringify({{ txHash }})
+            }});
+            const res = await resp.json();
+            if (res.ok) {{
+              st.style.color = 'hsl(142 76% 36%)';
+              st.innerText = '+' + (res.data?.creditsAdded || 0) + ' {"credit đã được nạp thành công! Đang tải lại..." if vi else " credits successfully added! Reloading..."}';
+              setTimeout(() => location.reload(), 1500);
+            }} else {{
+              throw new Error(res.error?.message || 'Server credit failed');
+            }}
+          }} catch(err) {{
+            st.style.color = 'hsl(var(--destructive))';
+            st.innerText = 'Lỗi: ' + err.message;
+          }} finally {{
+            btn.disabled = false;
+          }}
+        }}
+
         async function submitTopup(e) {{
           e.preventDefault();
           const txHash = document.getElementById('topup-tx').value.trim();
@@ -2871,7 +3016,7 @@ class ServerApplication:
             const res = await resp.json();
             if (res.ok) {{
               st.style.color = 'hsl(142 76% 36%)';
-              st.innerText = (res.data?.creditsAdded || '0') + ' {"credit đã được cộng thành công! Tải lại trang..." if vi else " credits successfully added! Reloading..."}';
+              st.innerText = '+' + (res.data?.creditsAdded || '0') + ' {"credit đã được cộng thành công! Tải lại trang..." if vi else " credits successfully added! Reloading..."}';
               setTimeout(() => location.reload(), 1500);
             }} else {{
               st.style.color = 'hsl(var(--destructive))';

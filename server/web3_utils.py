@@ -230,6 +230,11 @@ class TokenGatingService:
         try:
             tx = self.w3.eth.get_transaction(cleaned_hash)
             receipt = self.w3.eth.get_transaction_receipt(cleaned_hash)
+            if tx and receipt is None:
+                try:
+                    receipt = self.w3.eth.wait_for_transaction_receipt(cleaned_hash, timeout=10)
+                except Exception:
+                    pass
         except Exception as err:
             raise ValueError(f"Could not retrieve transaction: {err}") from err
 
