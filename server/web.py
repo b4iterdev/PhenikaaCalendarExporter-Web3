@@ -2412,24 +2412,24 @@ class ServerApplication:
                 if is_revoked else
                 f'<span class="status status--operational">{"Hoạt động" if vi else "Active"}</span>'
             )
-            scopes_badge = " ".join(f'<code style="font-size:11px;padding:2px 6px;border-radius:6px;background:hsl(var(--muted)/0.5);">{html.escape(s)}</code>' for s in t.get("scopes", []))
+            scopes_badge = " ".join(f'<code style="font-size:11px;padding:2px 6px;border-radius:6px;background:hsl(var(--muted));color:hsl(var(--foreground));border:1px solid hsl(var(--border));font-weight:500;">{html.escape(s)}</code>' for s in t.get("scopes", []))
             revoke_label = "Thu hồi" if vi else "Revoke"
             revoke_btn = "" if is_revoked else f'<button type="button" class="button button--danger" style="min-height:36px;padding:4px 12px;" onclick="revokeToken(\'{tid}\')">{revoke_label}</button>'
             token_rows.append(f"""
             <div class="managed-session" id="token-row-{tid}">
               <div style="flex:1;min-width:240px;">
                 <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-                  <strong>{tname}</strong>
+                  <strong style="color:hsl(var(--foreground));">{tname}</strong>
                   {status_badge}
                 </div>
                 <p style="margin:2px 0;font-family:monospace;font-size:12px;color:hsl(var(--muted-foreground));">Prefix: <b>{tprefix}...</b> · ID: {tid}</p>
                 <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;">{scopes_badge}</div>
-                <p style="margin:6px 0 0 0;font-size:11px;color:hsl(var(--muted-foreground));">{"Tạo lúc" if vi else "Created"}: {tcreated} · {"Dùng lần cuối" if vi else "Last used"}: {tused}</p>
+                <p style="margin:6px 0 0 0;font-size:12px;color:hsl(var(--muted-foreground));">{"Tạo lúc" if vi else "Created"}: {tcreated} · {"Dùng lần cuối" if vi else "Last used"}: {tused}</p>
               </div>
               <div>{revoke_btn}</div>
             </div>""")
 
-        token_list_html = "".join(token_rows) or f'<p class="text-muted" id="no-tokens-msg">{"Chưa có API token nào. Hãy tạo token đầu tiên bên dưới." if vi else "No API tokens yet. Create your first token below."}</p>'
+        token_list_html = "".join(token_rows) or f'<p class="text-muted" id="no-tokens-msg" style="color:hsl(var(--muted-foreground));font-size:14px;margin-top:8px;">{"Chưa có API token nào. Hãy tạo token đầu tiên bên dưới." if vi else "No API tokens yet. Create your first token below."}</p>'
 
         # Session selector options for playground
         session_options = "".join(
@@ -2497,31 +2497,31 @@ class ServerApplication:
             <p class="eyebrow">{'HẠN MỨC WEB3 & QUOTA' if vi else 'WEB3 TIER & API QUOTA'}</p>
             <h2>{'Gói tài khoản & Nạp credit' if vi else 'Account Tier & API Top-Up'}</h2>
             <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:16px;margin-top:16px;">
-              <div style="padding:16px;background:hsl(var(--muted)/0.3);border-radius:12px;border:1px solid hsl(var(--border));">
-                <span style="font-size:12px;color:hsl(var(--muted-foreground));display:block;margin-bottom:4px;">{'Cấp bậc tài khoản' if vi else 'Account Tier'}</span>
+              <div style="padding:16px;background:hsl(var(--card));border-radius:12px;border:1px solid hsl(var(--border));">
+                <span style="font-size:12px;font-weight:600;color:hsl(var(--muted-foreground));display:block;margin-bottom:4px;">{'Cấp bậc tài khoản' if vi else 'Account Tier'}</span>
                 <div style="display:flex;align-items:center;gap:8px;">
-                  <strong style="font-size:18px;text-transform:uppercase;">{tier}</strong>
+                  <strong style="font-size:18px;text-transform:uppercase;color:hsl(var(--foreground));">{tier}</strong>
                   <span class="status status--operational">{rate_limit} req/min</span>
                 </div>
-                <small class="text-muted" style="display:block;margin-top:4px;">{'Nắm giữ' if vi else 'Holding'}: {token_bal} tokens</small>
+                <small class="text-muted" style="display:block;margin-top:6px;font-size:12px;color:hsl(var(--muted-foreground));font-weight:500;">{'Nắm giữ' if vi else 'Holding'}: {token_bal} tokens</small>
               </div>
-              <div style="padding:16px;background:hsl(var(--muted)/0.3);border-radius:12px;border:1px solid hsl(var(--border));">
-                <span style="font-size:12px;color:hsl(var(--muted-foreground));display:block;margin-bottom:4px;">{'Số dư Credit API' if vi else 'Prepaid API Credits'}</span>
+              <div style="padding:16px;background:hsl(var(--card));border-radius:12px;border:1px solid hsl(var(--border));">
+                <span style="font-size:12px;font-weight:600;color:hsl(var(--muted-foreground));display:block;margin-bottom:4px;">{'Số dư Credit API' if vi else 'Prepaid API Credits'}</span>
                 <strong style="font-size:18px;color:hsl(var(--foreground));">{user_credits} <span style="font-size:13px;font-weight:normal;color:hsl(var(--muted-foreground));">{'lượt gọi' if vi else 'calls'}</span></strong>
-                <small class="text-muted" style="display:block;margin-top:4px;">{'Dùng khi vượt hạn mức hoặc chưa giữ token' if vi else 'Used for burst calls or un-gated access'}</small>
+                <small class="text-muted" style="display:block;margin-top:6px;font-size:12px;color:hsl(var(--muted-foreground));font-weight:500;">{'Dùng khi vượt hạn mức hoặc chưa giữ token' if vi else 'Used for burst calls or un-gated access'}</small>
               </div>
-              <div style="padding:16px;background:hsl(var(--muted)/0.3);border-radius:12px;border:1px solid hsl(var(--border));">
-                <span style="font-size:12px;color:hsl(var(--muted-foreground));display:block;margin-bottom:4px;">{'Ví kết nối' if vi else 'Connected Wallet'}</span>
-                <strong style="font-size:13px;font-family:monospace;word-break:break-all;">{wallet or ('Chưa gắn ví' if vi else 'No wallet')}</strong>
-                <small class="text-muted" style="display:block;margin-top:4px;">{f'1 POL = {self.config.web3_credits_per_unit} credits' if self.config.web3_treasury_address else 'Hybrid quota active'}</small>
+              <div style="padding:16px;background:hsl(var(--card));border-radius:12px;border:1px solid hsl(var(--border));">
+                <span style="font-size:12px;font-weight:600;color:hsl(var(--muted-foreground));display:block;margin-bottom:4px;">{'Ví kết nối' if vi else 'Connected Wallet'}</span>
+                <strong style="font-size:13px;font-family:monospace;word-break:break-all;color:hsl(var(--foreground));">{wallet or ('Chưa gắn ví' if vi else 'No wallet')}</strong>
+                <small class="text-muted" style="display:block;margin-top:6px;font-size:12px;color:hsl(var(--muted-foreground));font-weight:500;">{f'1 POL = {self.config.web3_credits_per_unit} credits' if self.config.web3_treasury_address else 'Hybrid quota active'}</small>
               </div>
             </div>
 
             <!-- Top up form -->
             <div style="border-top:1px solid hsl(var(--border));margin-top:20px;padding-top:20px;">
-              <h3 style="font-size:15px;margin:0 0 10px 0;">{'Nạp Credit qua Transaction Hash' if vi else 'Top-Up Credits via Transaction Hash'}</h3>
+              <h3 style="font-size:15px;margin:0 0 10px 0;color:hsl(var(--foreground));">{'Nạp Credit qua Transaction Hash' if vi else 'Top-Up Credits via Transaction Hash'}</h3>
               <form id="topup-form" onsubmit="submitTopup(event)" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
-                <input type="text" id="topup-tx" placeholder="0x..." style="flex:1;min-width:260px;font-family:monospace;font-size:13px;" required>
+                <input type="text" id="topup-tx" placeholder="0x..." style="flex:1;min-width:260px;font-family:monospace;font-size:13px;padding:8px 12px;border-radius:10px;border:1px solid hsl(var(--border));background:hsl(var(--card));color:hsl(var(--foreground));" required>
                 <button type="submit" class="button button--primary" id="btn-topup">{'Nạp Credit' if vi else 'Claim Credits'}</button>
               </form>
               <p id="topup-status" style="font-size:12px;margin:8px 0 0 0;display:none;"></p>
