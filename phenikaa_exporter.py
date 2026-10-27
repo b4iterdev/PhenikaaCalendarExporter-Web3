@@ -10,6 +10,8 @@ import hashlib
 import json
 import re
 import sys
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,6 +20,38 @@ from collections import Counter
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable
+
+try:
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util import Retry
+
+    _REQUESTS_AVAILABLE = True
+    _POOL_SESSION = requests.Session()
+    _adapter = HTTPAdapter(
+        pool_connections=10,
+        pool_maxsize=20,
+        max_retries=Retry(total=2, backoff_factor=1, status_forcelist=[429, 502, 503, 504]),
+    )
+    _POOL_SESSION.mount("http://", _adapter)
+    _POOL_SESSION.mount("https://", _adapter)
+except ImportError:
+    _REQUESTS_AVAILABLE = False
+    _POOL_SESSION = None
+
+_OUTBOUND_LOCK = threading.Lock()
+_LAST_REQUEST_TIME = 0.0
+MIN_OUTBOUND_INTERVAL = 1.0  # seconds between requests to Phenikaa firewall
+
+
+def _wait_for_outbound_slot() -> None:
+    global _LAST_REQUEST_TIME
+    with _OUTBOUND_LOCK:
+        now = time.monotonic()
+        elapsed = now - _LAST_REQUEST_TIME
+        if elapsed < MIN_OUTBOUND_INTERVAL:
+            time.sleep(MIN_OUTBOUND_INTERVAL - elapsed)
+        _LAST_REQUEST_TIME = time.monotonic()
 
 BOOTSTRAP_KEY = "AzzS"
 RESPONSE_KEY = "AzzSystem"
@@ -129,33 +163,57 @@ def fetch_calendar(
         "Accept": "application/json, text/javascript, */*; q=0.01",
         "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
         "X-Requested-With": "XMLHttpRequest",
+        "Connection": "keep-alive",
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
+            "Chrome/131.0.0.0 Safari/537.36"
         ),
         "Origin": PORTAL_BASE_URL,
         "Referer": PORTAL_BASE_URL + "/congsinhvien/index.aspx",
+        "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
     }
     if session.get("cookies"):
         headers["Cookie"] = str(session["cookies"])
     elif session.get("authCookie"):
         headers["Cookie"] = f".Auth={session['authCookie']}"
 
-    request = urllib.request.Request(
-        base_url.rstrip("/") + CALENDAR_API_PATH,
-        data=urllib.parse.urlencode({"A": encrypted}).encode("ascii"),
-        method="POST",
-        headers=headers,
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            result = json.loads(response.read())
-    except urllib.error.HTTPError as error:
-        if error.code == 401:
-            raise PermissionError("Phenikaa session expired; log in again and refresh the authentication source") from error
-        detail = error.read(1000).decode("utf-8", "replace")
-        raise RuntimeError(f"Phenikaa API returned HTTP {error.code}: {detail}") from error
+    _wait_for_outbound_slot()
+    target_url = base_url.rstrip("/") + CALENDAR_API_PATH
+    post_data = {"A": encrypted}
+
+    if _REQUESTS_AVAILABLE and _POOL_SESSION is not None:
+        try:
+            resp = _POOL_SESSION.post(target_url, data=post_data, headers=headers, timeout=timeout)
+            if resp.status_code == 401:
+                raise PermissionError("Phenikaa session expired; log in again and refresh the authentication source")
+            if not resp.ok:
+                raise RuntimeError(f"Phenikaa API returned HTTP {resp.status_code}: {resp.text[:1000]}")
+            result = resp.json()
+        except PermissionError:
+            raise
+        except Exception as error:
+            raise RuntimeError(f"Phenikaa connection error: {error}") from error
+    else:
+        request = urllib.request.Request(
+            target_url,
+            data=urllib.parse.urlencode(post_data).encode("ascii"),
+            method="POST",
+            headers=headers,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                result = json.loads(response.read())
+        except urllib.error.HTTPError as error:
+            if error.code == 401:
+                raise PermissionError("Phenikaa session expired; log in again and refresh the authentication source") from error
+            detail = error.read(1000).decode("utf-8", "replace")
+            raise RuntimeError(f"Phenikaa API returned HTTP {error.code}: {detail}") from error
     if not result.get("Success"):
         raise RuntimeError("Phenikaa API error: " + str(result.get("Message") or "unknown error"))
     data = result.get("Data")
